@@ -1,0 +1,17 @@
+VCD
+
+This distribution includes a modified training runtime derived from:
+
+Vision-OPD
+https://github.com/VisionOPD/Vision-OPD
+
+verl
+https://github.com/volcengine/verl
+
+The official benchmark implementation under
+evaluation/vision_opd_official is derived from the Vision-OPD evaluation
+pipeline at commit c2e345f and retains its scoring order:
+infer.py, judge_qwenlm.py, and cal_acc.py.
+
+The upstream projects are distributed under the Apache License 2.0. Modified
+files retain their upstream copyright and license headers where present.

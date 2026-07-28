@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="190" viewBox="0 0 820 190" role="img" aria-labelledby="title desc">
+  <title id="title">VCD</title>
+  <desc id="desc">VCD wordmark with connected evidence nodes and the subtitle Counterfactual Target Reconstruction</desc>
+  <defs>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="0.48" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="node" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <filter id="soft-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g opacity="0.9" stroke="url(#node)" stroke-width="3" fill="none">
+    <path d="M94 56 C155 56 160 87 218 87"/>
+    <path d="M94 130 C155 130 160 99 218 99"/>
+    <path d="M726 56 C665 56 660 87 602 87"/>
+    <path d="M726 130 C665 130 660 99 602 99"/>
+  </g>
+
+  <g filter="url(#soft-glow)">
+    <circle cx="74" cy="56" r="12" fill="#22d3ee"/>
+    <circle cx="74" cy="130" r="12" fill="#6366f1"/>
+    <circle cx="746" cy="56" r="12" fill="#8b5cf6"/>
+    <circle cx="746" cy="130" r="12" fill="#c084fc"/>
+  </g>
+
+  <text
+    x="410"
+    y="125"
+    text-anchor="middle"
+    font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    font-size="116"
+    font-weight="900"
+    letter-spacing="13"
+    fill="url(#wordmark)"
+  >VCD</text>
+  <text
+    x="410"
+    y="169"
+    text-anchor="middle"
+    font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    font-size="18"
+    font-weight="600"
+    letter-spacing="5"
+    fill="#64748b"
+  >COUNTERFACTUAL TARGET RECONSTRUCTION</text>
+</svg>

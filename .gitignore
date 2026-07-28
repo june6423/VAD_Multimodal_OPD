@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Local environments and credentials
+.env
+.env.*
+!.env.example
+
+# Models, datasets, and generated evaluation assets
+models/
+data/*
+!data/README.md
+checkpoints/
+rollouts/
+outputs/
+logs/
+run_pids/
+wandb/
+
+# Evaluation work products
+evaluation/vision_opd_official/model_answer/
+evaluation/vision_opd_official/judge/
+evaluation/vision_opd_official/*_images/
+evaluation/vision_opd_official/*_data/
+evaluation/vision_opd_official/*.json
+evaluation/vision_opd_official/*.parquet
+
+# Checkpoint and model payloads
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
