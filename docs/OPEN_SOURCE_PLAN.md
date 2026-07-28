@@ -33,12 +33,16 @@ self-contained training release. It is not an archive of project analyses.
 
 ## Phase 2: public artifacts
 
-Add only after the assets are ready and licensed:
+Available checkpoints:
 
-- selected 4B and 9B merged checkpoints with model cards;
+- [VAD for Qwen3.5-4B](https://huggingface.co/zhangkangning/VAD_for_Qwen3.5-4b);
+- [VAD for Qwen3.5-9B](https://huggingface.co/zhangkangning/VAD_for_Qwen3.5-9b).
+
+Add the remaining artifacts only after they are ready and licensed:
+
 - processed training-data metadata or a reproducible dataset release;
 - exact checkpoint-selection rules derived from training-time curves;
-- public paper, project-page, and model/dataset links;
+- public paper, project-page, and dataset links;
 - a verified `CITATION.cff` and BibTeX entry;
 - published official result metadata matching the downloadable checkpoints.
 

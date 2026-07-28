@@ -5,8 +5,8 @@
 
 <div align="center">
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/) [![License](https://img.shields.io/badge/License-Apache--2.0-22c55e.svg)](LICENSE) [![Release](https://img.shields.io/badge/Release-Phase%201%20Ready-7c3aed.svg)](docs/OPEN_SOURCE_PLAN.md)
-[![Training](https://img.shields.io/badge/Training-Qwen3.5--4B%20%7C%209B-6366f1.svg)](#-training) [![Online Eval](https://img.shields.io/badge/Online%20Eval-Every%2010%20Steps-0ea5e9.svg)](#-training) [![Official Eval](https://img.shields.io/badge/Official%20Eval-Vision--OPD-2563eb.svg)](#-official-evaluation) [![Judge](https://img.shields.io/badge/Judge-GPT--OSS--120B-f59e0b.svg)](#-official-evaluation)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/) [![License](https://img.shields.io/badge/License-Apache--2.0-22c55e.svg)](LICENSE) [![Release](https://img.shields.io/badge/Release-Phase%202%20In%20Progress-f59e0b.svg)](docs/OPEN_SOURCE_PLAN.md)
+[![Checkpoints](https://img.shields.io/badge/Checkpoints-Hugging%20Face-FFD21E.svg?logo=huggingface&logoColor=black)](#-model-checkpoints) [![Training](https://img.shields.io/badge/Training-Qwen3.5--4B%20%7C%209B-6366f1.svg)](#-training) [![Online Eval](https://img.shields.io/badge/Online%20Eval-Every%2010%20Steps-0ea5e9.svg)](#-training) [![Official Eval](https://img.shields.io/badge/Official%20Eval-Vision--OPD-2563eb.svg)](#-official-evaluation) [![Judge](https://img.shields.io/badge/Judge-GPT--OSS--120B-f59e0b.svg)](#-official-evaluation)
 
 </div>
 
@@ -15,6 +15,7 @@
   <a href="#-overview">Overview</a> |
   <a href="#-highlights">Highlights</a> |
   <a href="#-main-results">Results</a> |
+  <a href="#-model-checkpoints">Models</a> |
   <a href="#-repository-layout">Layout</a> |
   <a href="#-installation">Installation</a> |
   <a href="#-quick-start">Quick Start</a> |
@@ -38,12 +39,13 @@
 > reproducible three-view data construction, checkpoint utilities, mandatory
 > training-time benchmark monitoring, and the audited official evaluation path.
 
-| Available now | Planned for Phase 2 |
+| Available now | Remaining public artifacts |
 | --- | --- |
-| Training, data preparation, fast monitoring, official evaluation, tests | Paper link, selected checkpoints, processed dataset release, verified citation |
+| Training, data preparation, fast monitoring, official evaluation, tests, 4B and 9B checkpoints | Paper link, processed dataset release, verified citation |
 
-Paper, model checkpoint, and processed dataset links will be added only after
-their public artifacts exist.
+The 4B and 9B checkpoints are released on Hugging Face. Paper, processed
+dataset, and citation links will be added only after their public artifacts
+exist.
 
 ## 💡 Overview
 
@@ -85,6 +87,16 @@ VAD reaches an average score of **78.32** at the 4B scale and **79.93** at the
 Vision-OPD official pipeline with GPT-OSS-120B as the judge.
 
 ![Overall comparison on six fine-grained visual benchmarks](assets/main_experiment.png)
+
+## 🤗 Model Checkpoints
+
+The official VAD checkpoints are hosted on Hugging Face so that model weights
+remain separate from the focused GitHub training and evaluation release.
+
+| Scale | Initialization | Checkpoint |
+| --- | --- | --- |
+| 4B | `Qwen/Qwen3.5-4B` | [zhangkangning/VAD_for_Qwen3.5-4b](https://huggingface.co/zhangkangning/VAD_for_Qwen3.5-4b) |
+| 9B | `Qwen/Qwen3.5-9B` | [zhangkangning/VAD_for_Qwen3.5-9b](https://huggingface.co/zhangkangning/VAD_for_Qwen3.5-9b) |
 
 ## 🗂️ Repository Layout
 
@@ -351,7 +363,7 @@ reuse status, and per-benchmark completeness counts.
 | Phase | Scope | Status |
 | --- | --- | --- |
 | Phase 1 | Training, data construction, fast monitoring, official evaluation, tests | ✅ Ready |
-| Phase 2 | Public checkpoints, processed dataset artifacts, paper and verified citation | ⏳ Planned |
+| Phase 2 | Public checkpoints, processed dataset artifacts, paper and verified citation | 🚧 Checkpoints released |
 | Phase 3 | Curated scripts for reproducing paper figures and tables | ⏳ Planned |
 
 The complete release boundary and publication checklist are maintained in
