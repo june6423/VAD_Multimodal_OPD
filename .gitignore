@@ -12,7 +12,7 @@ __pycache__/
 !.env.example
 
 # Models, datasets, and generated evaluation assets
-models/
+/models/
 data/*
 !data/README.md
 checkpoints/
