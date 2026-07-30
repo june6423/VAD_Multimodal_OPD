@@ -17,8 +17,8 @@ def load_module(name: str, path: Path):
     return module
 
 
-audit_module = load_module("vcd_audit_results", EVAL_DIR / "audit_results.py")
-repair_module = load_module("vcd_repair_judges", EVAL_DIR / "repair_judges.py")
+audit_module = load_module("vad_audit_results", EVAL_DIR / "audit_results.py")
+repair_module = load_module("vad_repair_judges", EVAL_DIR / "repair_judges.py")
 
 
 def test_judge_label_canonicalization() -> None:

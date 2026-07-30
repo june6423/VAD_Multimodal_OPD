@@ -6,8 +6,8 @@ usage() {
   cat <<'EOF'
 Usage:
   MODEL_API_BASE=http://127.0.0.1:8000/v1 \
-  MODEL_ID=VCD \
-  MODEL_TAG=vcd_checkpoint \
+  MODEL_ID=VAD \
+  MODEL_TAG=vad_checkpoint \
   bash scripts/evaluate_official.sh
 
 Optional answer reuse:
@@ -36,7 +36,7 @@ BENCHMARK_DATA_DIR="${BENCHMARK_DATA_DIR:-${PROJECT_ROOT}/data/benchmarks}"
 MODEL_API_BASE="${MODEL_API_BASE:-${API_BASE:-}}"
 MODEL_API_KEY="${MODEL_API_KEY:-${OPENAI_API_KEY:-EMPTY}}"
 MODEL_ID="${MODEL_ID:-${OPENAI_MODEL_ID:-}}"
-MODEL_TAG="${MODEL_TAG:-VCD}"
+MODEL_TAG="${MODEL_TAG:-VAD}"
 MODEL_PATH="${MODEL_PATH:-}"
 
 JUDGE_API_BASE="${JUDGE_API_BASE:-http://127.0.0.1:8900/v1}"

@@ -1,4 +1,4 @@
-# Modified for the VCD release: deterministic seed forwarding and output audits.
+# Modified for the VAD release: deterministic seed forwarding and output audits.
 
 import argparse
 import base64

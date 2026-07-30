@@ -25,7 +25,7 @@ existing checkpoints and logs can be reproduced.
 Every public launcher uses:
 
 ```text
-PROJECT_NAME=VCD
+PROJECT_NAME=VAD
 ```
 
 The 4B and 9B runs therefore appear in one W&B project. Change
@@ -80,7 +80,7 @@ the API key in its manifest.
 ## Launch and override
 
 ```bash
-bash scripts/train_vcd.sh --profile 4b
+bash scripts/train_vad.sh --profile 4b
 ```
 
 Environment variables override the profile defaults:
@@ -88,15 +88,15 @@ Environment variables override the profile defaults:
 ```bash
 MODEL_PATH="/models/Qwen3.5-4B" \
 TEACHER_MODEL_PATH="/models/Qwen3.5-4B" \
-EXPERIMENT_NAME="vcd-4b-seed42" \
-PROJECT_NAME="VCD" \
-bash scripts/train_vcd.sh --profile 4b
+EXPERIMENT_NAME="vad-4b-seed42" \
+PROJECT_NAME="VAD" \
+bash scripts/train_vad.sh --profile 4b
 ```
 
 Additional Hydra overrides can be passed after `--`:
 
 ```bash
-bash scripts/train_vcd.sh --profile 4b -- \
+bash scripts/train_vad.sh --profile 4b -- \
   trainer.max_actor_ckpt_to_keep=3
 ```
 

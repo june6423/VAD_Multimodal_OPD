@@ -36,7 +36,7 @@ Start a merged model:
 ```bash
 MAX_MODEL_LEN=32768 \
 TENSOR_PARALLEL_SIZE=8 \
-bash scripts/serve_checkpoint.sh /path/to/merged_checkpoint VCD
+bash scripts/serve_checkpoint.sh /path/to/merged_checkpoint VAD
 ```
 
 ## Judge settings
@@ -58,8 +58,8 @@ server's private-network IP in `JUDGE_API_BASE`.
 
 ```bash
 MODEL_API_BASE="http://127.0.0.1:8000/v1" \
-MODEL_ID="VCD" \
-MODEL_TAG="vcd_selected_checkpoint" \
+MODEL_ID="VAD" \
+MODEL_TAG="vad_selected_checkpoint" \
 MODEL_PATH="/path/to/merged_checkpoint" \
 JUDGE_API_BASE="http://JUDGE_HOST:8900/v1" \
 bash scripts/evaluate_official.sh
@@ -82,7 +82,7 @@ If all model answers already exist, avoid re-running inference:
 REUSE_ANSWER_ROOT="/path/to/model_answer" \
 REUSE_MODEL_TAG="source_tag" \
 MODEL_TAG="new_official_tag" \
-MODEL_ID="VCD" \
+MODEL_ID="VAD" \
 MODEL_PATH="/path/to/checkpoint" \
 JUDGE_API_BASE="http://JUDGE_HOST:8900/v1" \
 bash scripts/evaluate_official.sh

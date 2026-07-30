@@ -53,8 +53,8 @@ python scripts/prepare_data.py \
   --data-dir data \
   --skip-download \
   --limit 16 \
-  --output data/train_vcd_smoke.parquet \
-  --manifest data/vcd_smoke_manifest.json \
+  --output data/train_vad_smoke.parquet \
+  --manifest data/vad_smoke_manifest.json \
   --overwrite
 ```
 
@@ -62,9 +62,9 @@ python scripts/prepare_data.py \
 
 | Path | Purpose |
 | --- | --- |
-| `data/train_vcd.parquet` | Training records consumed by `train_vcd.sh` |
+| `data/train_vad.parquet` | Training records consumed by `train_vad.sh` |
 | `data/evidence_degraded/` | Generated evidence-degraded PNG files |
-| `data/vcd_data_manifest.json` | Row count, column mapping, degradation settings, and verification result |
+| `data/vad_data_manifest.json` | Row count, column mapping, degradation settings, and verification result |
 
 The parquet stores absolute image paths. If the data tree is moved to another
 location, rerun the preparation command so the paths are regenerated.
@@ -80,5 +80,5 @@ Preparation fails unless:
 - row-level metadata maps the semantic conditions to the expected columns; and
 - the output row count matches the selected source records.
 
-The training launcher also checks that `train_vcd.parquet` exists before
+The training launcher also checks that `train_vad.parquet` exists before
 starting Ray or allocating model memory.

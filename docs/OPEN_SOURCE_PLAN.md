@@ -6,7 +6,7 @@ The current directory implements the first public release boundary.
 
 Included:
 
-- the complete VCD target-construction and paired-view training path;
+- the complete VAD target-construction and paired-view training path;
 - fixed-initial-teacher 4B and 9B profiles;
 - deterministic evidence-present and evidence-degraded data preparation;
 - mandatory four-benchmark validation every 10 training steps;

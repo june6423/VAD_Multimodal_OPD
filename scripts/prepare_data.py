@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare VCD training data and its aligned visual-evidence views.
+"""Prepare VAD training data and its aligned visual-evidence views.
 
 The generated parquet contains three image conditions for every sample:
 
@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default="data", help="Dataset download and output root.")
     parser.add_argument("--hf-repo", default=DEFAULT_REPO, help="Hugging Face dataset repository.")
-    parser.add_argument("--output", default=None, help="Output parquet. Defaults to DATA_DIR/train_vcd.parquet.")
+    parser.add_argument("--output", default=None, help="Output parquet. Defaults to DATA_DIR/train_vad.parquet.")
     parser.add_argument(
         "--degraded-dir",
         default=None,
@@ -246,7 +246,7 @@ def verify_parquet(path: Path, expected_rows: int | None = None) -> dict[str, An
     if expected_rows is not None and len(dataset) != expected_rows:
         raise ValueError(f"Expected {expected_rows} rows, found {len(dataset)} in {path}.")
 
-    for row_index, row in enumerate(tqdm(dataset, desc="Verifying VCD data", unit="row")):
+    for row_index, row in enumerate(tqdm(dataset, desc="Verifying VAD data", unit="row")):
         full_path = extract_single_path(row["images"], "images", row_index)
         clear_path = extract_single_path(row["bbox_images"], "bbox_images", row_index)
         degraded = extract_single_path(row["degraded_bbox_images"], "degraded_bbox_images", row_index)
@@ -283,9 +283,9 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(f"--limit must be positive, got {args.limit}.")
 
     data_dir = Path(args.data_dir).resolve()
-    output = Path(args.output).resolve() if args.output else data_dir / "train_vcd.parquet"
+    output = Path(args.output).resolve() if args.output else data_dir / "train_vad.parquet"
     degraded_dir = Path(args.degraded_dir).resolve() if args.degraded_dir else data_dir / "evidence_degraded"
-    manifest = Path(args.manifest).resolve() if args.manifest else data_dir / "vcd_data_manifest.json"
+    manifest = Path(args.manifest).resolve() if args.manifest else data_dir / "vad_data_manifest.json"
 
     if args.verify_only:
         summary = verify_parquet(output, expected_rows=args.limit)

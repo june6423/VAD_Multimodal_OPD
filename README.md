@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="assets/vcd_title.svg" alt="VCD" width="660"/><br>
+  <img src="assets/vad_title.svg" alt="VAD" width="660"/><br>
   <sub>Counterfactual target reconstruction for multimodal on-policy distillation</sub>
 </h1>
 
@@ -26,10 +26,10 @@
   <a href="#-citation">Citation</a>
 </p>
 
-<h5 align="center">A focused release for training VCD and reporting results with the official evaluation protocol.</h5>
+<h5 align="center">A focused release for training VAD and reporting results with the official evaluation protocol.</h5>
 
 <div align="center">
-  <img src="https://readme-typing-svg.herokuapp.com?font=Orbitron&size=18&duration=3000&pause=1000&color=6366F1&center=true&vCenter=true&width=900&lines=Three+Aligned+Visual+Conditions;Counterfactual+Target+Reconstruction;Train+with+Fast+Monitoring+%7C+Report+with+Official+Evaluation" alt="VCD workflow animation"/>
+  <img src="https://readme-typing-svg.herokuapp.com?font=Orbitron&size=18&duration=3000&pause=1000&color=6366F1&center=true&vCenter=true&width=900&lines=Three+Aligned+Visual+Conditions;Counterfactual+Target+Reconstruction;Train+with+Fast+Monitoring+%7C+Report+with+Official+Evaluation" alt="VAD workflow animation"/>
 </div>
 
 ## 📣 Release Status
@@ -49,10 +49,10 @@ exist.
 
 ## 💡 Overview
 
-**VCD** learns from three aligned visual conditions at each student-generated
+**VAD** learns from three aligned visual conditions at each student-generated
 prefix: the student's full image, a clear evidence-present teacher crop, and an
 evidence-degraded version of the same crop. Rather than directly matching the
-complete privileged teacher distribution, VCD reconstructs a student-anchored
+complete privileged teacher distribution, VAD reconstructs a student-anchored
 target from the correction attributable to the controlled visual-evidence
 intervention.
 
@@ -71,7 +71,7 @@ unrelated upstream experimental recipes are excluded from the public path.
   </tr>
   <tr>
     <td width="50%"><strong>🧊 Fixed initial teacher</strong><br>Public profiles keep the teacher at the initial checkpoint while the student learns from its own rollout prefixes.</td>
-    <td width="50%"><strong>📈 Comparable W&amp;B runs</strong><br>The 4B and 9B profiles share one W&amp;B project, <code>VCD</code>, for direct curve comparison.</td>
+    <td width="50%"><strong>📈 Comparable W&amp;B runs</strong><br>The 4B and 9B profiles share one W&amp;B project, <code>VAD</code>, for direct curve comparison.</td>
   </tr>
   <tr>
     <td width="50%"><strong>⚡ Mandatory online monitoring</strong><br>VStar, ZoomBench, HRBench-4K, and HRBench-8K run every 10 training steps.</td>
@@ -101,12 +101,12 @@ remain separate from the focused GitHub training and evaluation release.
 ## 🗂️ Repository Layout
 
 ```text
-VCD/
+VAD_Multimodal_OPD/
 ├── assets/                         # README wordmark, framework, and result figures
 ├── chat_templates/                 # Qwen3.5 perception chat template
 ├── configs/
-│   ├── vcd_4b.env                  # Reproduction-oriented 4B profile
-│   └── vcd_9b.env                  # Reproduction-oriented 9B profile
+│   ├── vad_4b.env                  # Reproduction-oriented 4B profile
+│   └── vad_9b.env                  # Reproduction-oriented 9B profile
 ├── data/                           # Generated locally; payloads are ignored
 ├── docs/
 │   ├── DATA.md                     # Three-view construction and schema
@@ -119,7 +119,7 @@ VCD/
 ├── scripts/
 │   ├── prepare_data.py             # Download, degrade, package, and verify
 │   ├── prepare_benchmarks.sh       # Prepare fast and formal benchmark data
-│   ├── train_vcd.sh                # 4B/9B training entrypoint
+│   ├── train_vad.sh                # 4B/9B training entrypoint
 │   ├── merge_checkpoint.sh         # FSDP to Hugging Face conversion
 │   ├── serve_checkpoint.sh         # Official-style model serving
 │   ├── serve_gpt_oss_120b.sh       # GPT-OSS judge serving profile
@@ -138,8 +138,8 @@ methods.
 ### Training environment
 
 ```bash
-conda create -n vcd python=3.12 -y
-conda activate vcd
+conda create -n vad python=3.12 -y
+conda activate vad
 
 pip install --upgrade pip
 pip install --no-deps -r requirements.txt
@@ -180,21 +180,21 @@ The default judge endpoint is `http://127.0.0.1:8900/v1`. For a judge hosted on
 another machine, keep `HOST=0.0.0.0` on the server and export its private-network
 endpoint on the training machine.
 
-### 3. Train VCD
+### 3. Train VAD
 
 ```bash
 export WANDB_API_KEY="..."
 export BENCHMARK_EVAL_JUDGE_API_BASE="http://JUDGE_HOST:8900/v1"
 
-bash scripts/train_vcd.sh --profile 4b
+bash scripts/train_vad.sh --profile 4b
 # or
-bash scripts/train_vcd.sh --profile 9b
+bash scripts/train_vad.sh --profile 9b
 ```
 
 Inspect the resolved release invariants without allocating model memory:
 
 ```bash
-bash scripts/train_vcd.sh --profile 4b --dry-run
+bash scripts/train_vad.sh --profile 4b --dry-run
 ```
 
 ### 4. Merge and serve a selected checkpoint
@@ -207,15 +207,15 @@ bash scripts/merge_checkpoint.sh \
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 bash scripts/serve_checkpoint.sh \
   checkpoints/<run>/global_step_<step>_merged \
-  VCD
+  VAD
 ```
 
 ### 5. Run the official final evaluation
 
 ```bash
 MODEL_API_BASE="http://127.0.0.1:8000/v1" \
-MODEL_ID="VCD" \
-MODEL_TAG="vcd_step_selected" \
+MODEL_ID="VAD" \
+MODEL_TAG="vad_step_selected" \
 JUDGE_API_BASE="http://JUDGE_HOST:8900/v1" \
 bash scripts/evaluate_official.sh
 ```
@@ -235,7 +235,7 @@ bilinear downsampling to 10 percent of its width and height, followed by
 nearest-neighbor upsampling to the original crop resolution.
 
 Preparation verifies every referenced path, row count, semantic mapping, and
-present/degraded image size before writing `data/vcd_data_manifest.json`.
+present/degraded image size before writing `data/vad_data_manifest.json`.
 
 ```bash
 # Rebuild from an existing local download.
@@ -293,7 +293,7 @@ The final path uses:
 1. `evaluation/vision_opd_official/infer.py`;
 2. `evaluation/vision_opd_official/judge_qwenlm.py`;
 3. `evaluation/vision_opd_official/cal_acc.py`;
-4. VCD completeness audits and noncanonical-judge repair.
+4. VAD completeness audits and noncanonical-judge repair.
 
 | Component | Formal setting |
 | --- | --- |
@@ -317,8 +317,8 @@ incomplete.
 ```bash
 REUSE_ANSWER_ROOT="/path/to/model_answer" \
 REUSE_MODEL_TAG="existing_tag" \
-MODEL_TAG="vcd_rejudge" \
-MODEL_ID="VCD" \
+MODEL_TAG="vad_rejudge" \
+MODEL_ID="VAD" \
 JUDGE_API_BASE="http://JUDGE_HOST:8900/v1" \
 bash scripts/evaluate_official.sh
 ```
@@ -375,7 +375,7 @@ The training runtime is derived from
 [Vision-OPD](https://github.com/VisionOPD/Vision-OPD) and
 [verl](https://github.com/volcengine/verl). The final benchmark implementation
 is derived from the Vision-OPD official evaluator at commit `c2e345f`.
-Modifications add VCD target construction, paired counterfactual-view routing,
+Modifications add VAD target construction, paired counterfactual-view routing,
 Qwen3.5 compatibility, reproducibility controls, and result-integrity checks.
 
 This project is released under the [Apache License 2.0](LICENSE). See
@@ -383,5 +383,5 @@ This project is released under the [Apache License 2.0](LICENSE). See
 
 ## 📝 Citation
 
-The VCD citation entry will be added after the paper receives a public
+The VAD citation entry will be added after the paper receives a public
 identifier. No provisional or fabricated bibliographic entry is included.

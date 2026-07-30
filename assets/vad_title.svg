@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="820" height="190" viewBox="0 0 820 190" role="img" aria-labelledby="title desc">
-  <title id="title">VCD</title>
-  <desc id="desc">VCD wordmark with connected evidence nodes and the subtitle Counterfactual Target Reconstruction</desc>
+  <title id="title">VAD</title>
+  <desc id="desc">VAD wordmark with connected evidence nodes and the subtitle Counterfactual Target Reconstruction</desc>
   <defs>
     <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#38bdf8"/>
@@ -43,7 +43,7 @@
     font-weight="900"
     letter-spacing="13"
     fill="url(#wordmark)"
-  >VCD</text>
+  >VAD</text>
   <text
     x="410"
     y="169"

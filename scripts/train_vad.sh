@@ -5,10 +5,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/train_vcd.sh [--profile 4b|9b] [--dry-run] [-- HYDRA_OVERRIDE ...]
+  bash scripts/train_vad.sh [--profile 4b|9b] [--dry-run] [-- HYDRA_OVERRIDE ...]
 
 Required before a real launch:
-  1. data/train_vcd.parquet
+  1. data/train_vad.parquet
   2. data/benchmarks/opd_fast_benchmarks.parquet
   3. WANDB_API_KEY when W&B logging is enabled
   4. A reachable benchmark judge endpoint
@@ -19,7 +19,7 @@ at a fixed frequency of every 10 optimizer steps.
 EOF
 }
 
-PROFILE="${VCD_PROFILE:-4b}"
+PROFILE="${VAD_PROFILE:-4b}"
 DRY_RUN=0
 EXTRA_ARGS=()
 while [[ "$#" -gt 0 ]]; do
@@ -49,7 +49,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROFILE_FILE="${PROJECT_ROOT}/configs/vcd_${PROFILE}.env"
+PROFILE_FILE="${PROJECT_ROOT}/configs/vad_${PROFILE}.env"
 if [[ ! -f "${PROFILE_FILE}" ]]; then
   echo "Unsupported profile ${PROFILE!r}; expected 4b or 9b." >&2
   exit 2
@@ -59,10 +59,10 @@ fi
 source "${PROFILE_FILE}"
 
 RUN_STAMP="${RUN_STAMP:-$(date +%Y%m%d_%H%M%S)}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-VCD-${PROFILE_LABEL}-${RUN_STAMP}}"
-PROJECT_NAME="${PROJECT_NAME:-VCD}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-VAD-${PROFILE_LABEL}-${RUN_STAMP}}"
+PROJECT_NAME="${PROJECT_NAME:-VAD}"
 
-TASK_TRAIN_FILE="${TASK_TRAIN_FILE:-${PROJECT_ROOT}/data/train_vcd.parquet}"
+TASK_TRAIN_FILE="${TASK_TRAIN_FILE:-${PROJECT_ROOT}/data/train_vad.parquet}"
 BENCHMARK_EVAL_FILE="${BENCHMARK_EVAL_FILE:-${PROJECT_ROOT}/data/benchmarks/opd_fast_benchmarks.parquet}"
 CUSTOM_CHAT_TEMPLATE_FILE="${CUSTOM_CHAT_TEMPLATE_FILE:-${PROJECT_ROOT}/chat_templates/perception_chat_template_qwen35.jinja}"
 
@@ -125,7 +125,7 @@ if (( ${#EXPERIMENT_NAME} > 120 )); then
 fi
 
 print_configuration() {
-  echo "VCD training preflight"
+  echo "VAD training preflight"
   echo "  profile: ${PROFILE}"
   echo "  experiment: ${EXPERIMENT_NAME}"
   echo "  W&B project: ${PROJECT_NAME}"

@@ -1,4 +1,4 @@
-# Modified for the VCD release: resilient API-error handling and POPE routing.
+# Modified for the VAD release: resilient API-error handling and POPE routing.
 
 import argparse
 import json

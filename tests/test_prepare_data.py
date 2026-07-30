@@ -30,7 +30,7 @@ def test_prepare_three_aligned_views(tmp_path: Path) -> None:
         "extra_info": {"source": "unit-test"},
     }
     (data_dir / "train.jsonl").write_text(json.dumps(source) + "\n", encoding="utf-8")
-    output = data_dir / "train_vcd.parquet"
+    output = data_dir / "train_vad.parquet"
     manifest = data_dir / "manifest.json"
     args = argparse.Namespace(
         data_dir=str(data_dir),

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="590" viewBox="0 0 1200 590" role="img" aria-labelledby="title desc">
-  <title id="title">VCD training and evaluation workflow</title>
+  <title id="title">VAD training and evaluation workflow</title>
   <desc id="desc">Three aligned visual views feed counterfactual target reconstruction, followed by on-policy training, fast monitoring, and official Vision-OPD evaluation.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
@@ -80,7 +80,7 @@
     <rect x="300" y="308" width="600" height="104" rx="24" fill="url(#target)" opacity="0.97"/>
   </g>
   <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" text-anchor="middle">
-    <text x="600" y="349" fill="#ffffff" font-size="24" font-weight="800">VCD target reconstruction</text>
+    <text x="600" y="349" fill="#ffffff" font-size="24" font-weight="800">VAD target reconstruction</text>
     <text x="600" y="380" fill="#eef2ff" font-size="16">Student-anchored · budgeted asymmetric correction · fixed initial teacher</text>
   </g>
 

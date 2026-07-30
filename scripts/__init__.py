@@ -1,1 +1,1 @@
-"""Public VCD command-line utilities."""
+"""Public VAD command-line utilities."""

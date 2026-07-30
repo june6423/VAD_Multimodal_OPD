@@ -1,4 +1,4 @@
-"""Unit tests for the public VCD budgeted asymmetric target."""
+"""Unit tests for the public VAD budgeted asymmetric target."""
 
 import torch
 
@@ -25,7 +25,7 @@ def make_cfg(**overrides):
     return SelfDistillationConfig(**defaults)
 
 
-def test_vcd_budgeted_target_loss_and_metrics():
+def test_vad_budgeted_target_loss_and_metrics():
     student = torch.log_softmax(torch.tensor([[[0.0, 1.0, -1.0, 0.5]]]), dim=-1).requires_grad_(True)
     teacher_plus = torch.log_softmax(torch.tensor([[[1.2, 0.2, -0.5, 0.0]]]), dim=-1)
     teacher_minus = torch.log_softmax(torch.tensor([[[-0.5, 1.2, 0.1, 0.0]]]), dim=-1)
