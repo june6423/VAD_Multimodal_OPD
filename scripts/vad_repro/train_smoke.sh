@@ -104,7 +104,10 @@ export BENCHMARK_EVAL_BENCHMARKS
 
 # train_vad.sh lines 242-357. Changed overrides: total_training_steps (2, both), test_freq (-1),
 # save_freq (2), logger (console), default_local_dir and rollout_data_dir (output root).
-cmd=(python3 -m verl.trainer.main_ppo --config-name vopd
+# DT STATUS on task 001: print verl.__file__ inside the main_ppo process. The -c wrapper runs
+# verl.trainer.main_ppo as __main__ with the same arguments, as python3 -m does.
+probe='import runpy, sys, verl; print("MAIN_PPO_VERL_FILE", verl.__file__, flush=True); runpy.run_module("verl.trainer.main_ppo", run_name="__main__", alter_sys=True)'
+cmd=(python3 -c "$probe" --config-name vopd
   data.train_files="[\"${TASK_TRAIN_FILE}\"]"
   data.val_files="[\"${BENCHMARK_EVAL_FILE}\"]"
   data.filter_overlong_prompts=False
@@ -266,6 +269,11 @@ fi
 {
   echo "train exit $train_status wall_seconds $((end - start))"
   echo "merge exit $merge_status"
+  echo "== verl location"
+  grep -m 1 'MAIN_PPO_VERL_FILE' "$out/console.log"
+  echo "console.log lines with /VAD_Multimodal_OPD/verl/: $(grep -c '/VAD_Multimodal_OPD/verl/' "$out/console.log")"
+  echo "console.log lines with /vision-opd/verl/: $(grep -c '/vision-opd/verl/' "$out/console.log")"
+  grep -m 3 '/vision-opd/verl/' "$out/console.log"
   echo "== error lines in console.log (first 40)"
   grep -n -E 'OutOfMemory|out of memory|cudaErrorCallRequiresNewerDriver|CUDA_ERROR_UNSUPPORTED_PTX_VERSION|driver too old|Traceback|Error' "$out/console.log" | head -n 40
   echo "== merge log tail"; tail -n 20 "$out/merge.log" 2>/dev/null
