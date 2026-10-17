@@ -66,8 +66,8 @@ if [[ "${SEED}" != "42" || "${MAX_TOKENS}" != "8192" || "${ENABLE_THINKING}" != 
   echo "Formal reproduction requires SEED=42, MAX_TOKENS=8192, and ENABLE_THINKING=False." >&2
   exit 2
 fi
-if [[ "${JUDGE_MODEL}" != "openai/gpt-oss-120b" ]]; then
-  echo "Formal main-table evaluation requires JUDGE_MODEL=openai/gpt-oss-120b." >&2
+if [[ "${JUDGE_MODEL}" != "openai/gpt-oss-120b" && "${JUDGE_MODEL}" != "mistralai/Mistral-Small-3.2-24B-Instruct-2506" ]]; then
+  echo "Formal main-table evaluation requires JUDGE_MODEL=openai/gpt-oss-120b or mistralai/Mistral-Small-3.2-24B-Instruct-2506." >&2
   exit 2
 fi
 if [[ "${JUDGE_MAX_TOKENS}" != "2048" ]]; then
