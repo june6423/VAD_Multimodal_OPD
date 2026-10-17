@@ -104,10 +104,7 @@ export BENCHMARK_EVAL_BENCHMARKS
 
 # train_vad.sh lines 242-357. Changed overrides: total_training_steps (2, both), test_freq (-1),
 # save_freq (2), logger (console), default_local_dir and rollout_data_dir (output root).
-# DT STATUS on task 001: print verl.__file__ inside the main_ppo process. The -c wrapper runs
-# verl.trainer.main_ppo as __main__ with the same arguments, as python3 -m does.
-probe='import runpy, sys, verl; print("MAIN_PPO_VERL_FILE", verl.__file__, flush=True); runpy.run_module("verl.trainer.main_ppo", run_name="__main__", alter_sys=True)'
-cmd=(python3 -c "$probe" --config-name vopd
+cmd=(python3 -m verl.trainer.main_ppo --config-name vopd
   data.train_files="[\"${TASK_TRAIN_FILE}\"]"
   data.val_files="[\"${BENCHMARK_EVAL_FILE}\"]"
   data.filter_overlong_prompts=False
@@ -228,8 +225,14 @@ cmd=(python3 -c "$probe" --config-name vopd
   echo "date $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "cwd $(pwd)"
   echo "git HEAD $(git -c safe.directory="$root" rev-parse HEAD)"
-  echo "== environment"
-  env | grep -E '^(CUDA_VISIBLE_DEVICES|PYTHONPATH|HF_HUB_OFFLINE|VLLM_USE_V1|RAY_ADDRESS|WANDB_MODE|WANDB_DIR|PYTHONUNBUFFERED|OPD_BENCH_JUDGE_[A-Z_]*|BENCHMARK_EVAL_[A-Z]*)=' | sort
+  echo "== environment (names with KEY, TOKEN, SECRET or PASSWORD show <set> or <unset>)"
+  env | grep -E '^(CUDA_VISIBLE_DEVICES|PYTHONPATH|HF_HUB_OFFLINE|VLLM_USE_V1|RAY_ADDRESS|WANDB_MODE|WANDB_DIR|PYTHONUNBUFFERED|OPD_BENCH_JUDGE_[A-Z_]*|BENCHMARK_EVAL_[A-Z]*)=' \
+    | grep -Ev '^[A-Z_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Z_]*=' | sort
+  for name in $(compgen -e | grep -E 'KEY|TOKEN|SECRET|PASSWORD' | sort); do
+    if [[ -n "${!name}" ]]; then echo "$name=<set>"; else echo "$name=<unset>"; fi
+  done
+  echo "== verl location (python3 -c, same cwd and environment as the launch)"
+  echo "VERL_FILE $(python3 -c 'import verl; print(verl.__file__)')"
   echo "== nvidia-smi (container indices)"
   nvidia-smi --query-gpu=index,uuid,pci.bus_id,memory.used,memory.total --format=csv,noheader
   echo "== command (one argument per line)"
@@ -270,7 +273,7 @@ fi
   echo "train exit $train_status wall_seconds $((end - start))"
   echo "merge exit $merge_status"
   echo "== verl location"
-  grep -m 1 'MAIN_PPO_VERL_FILE' "$out/console.log"
+  grep -m 1 '^VERL_FILE' "$out/COMMAND.txt"
   echo "console.log lines with /VAD_Multimodal_OPD/verl/: $(grep -c '/VAD_Multimodal_OPD/verl/' "$out/console.log")"
   echo "console.log lines with /vision-opd/verl/: $(grep -c '/vision-opd/verl/' "$out/console.log")"
   grep -m 3 '/vision-opd/verl/' "$out/console.log"
