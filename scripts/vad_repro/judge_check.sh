@@ -16,6 +16,17 @@ export PYTHONDONTWRITEBYTECODE=1
 
 # scripts/evaluate_official.sh calls curl for its endpoint checks.
 echo "curl: $(command -v curl || echo missing)" > "$out/TOOLS.txt"
+# The judge task writes READY.json when its server answers. Wait up to 3600 s. Stop early when the
+# judge record in the same folder reports a failed start.
+for _ in $(seq 1 360); do
+  [[ -f "$ready" ]] && break
+  grep -q "judge not ready" "$(dirname "$ready")/JUDGE_SERVE.txt" 2>/dev/null && break
+  sleep 10
+done
+if [[ ! -f "$ready" ]]; then
+  { echo "READY.json missing: $ready"; tail -n 40 "$(dirname "$ready")/JUDGE_SERVE.txt" 2>&1; } > "$out/JUDGE_CHECK.txt"
+  exit 1
+fi
 python - "$ready" "$out" "$root/evaluation/vision_opd_official" > "$out/JUDGE_CHECK.txt" 2>&1 <<'EOF'
 import json
 import sys
