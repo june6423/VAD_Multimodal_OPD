@@ -17,6 +17,7 @@
 Single Process Actor
 """
 
+import json
 import logging
 import os
 import time
@@ -344,6 +345,43 @@ class DataParallelPPOActor(BasePPOActor):
             },
             save_path,
         )
+
+    @staticmethod
+    def _collect_tokstats_rows(
+        *,
+        tokstats: dict[str, torch.Tensor],
+        response_mask: torch.Tensor,
+        row_index: torch.Tensor,
+        uids,
+    ) -> list[dict]:
+        """One record per row: uid, row_index, and the four per-token vectors over the valid response tokens."""
+        valid = (response_mask > 0).cpu()
+        vectors = {name: tokstats[name].detach().cpu().to(torch.float16) for name in ("r_norm", "rho", "jsd", "anchor_jsd")}
+        rows = []
+        for i in range(valid.shape[0]):
+            row = {
+                "uid": str(uids[i]),
+                "row_index": int(row_index[i].item()),
+                "response_length": int(valid[i].sum().item()),
+            }
+            for name, values in vectors.items():
+                row[name] = values[i][valid[i]].tolist()
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _write_tokstats_rows(*, tokstats_dir: str, meta_info: dict, rows: list[dict]) -> None:
+        """Append the rows of one update to <tokstats_dir>/step_<global step>_rank_<rank>.jsonl and flush."""
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            rank = torch.distributed.get_rank()
+        else:
+            rank = 0
+        os.makedirs(tokstats_dir, exist_ok=True)
+        path = os.path.join(tokstats_dir, f"step_{int(meta_info['global_steps'])}_rank_{rank}.jsonl")
+        with open(path, "a") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+            handle.flush()
 
     def _forward_micro_batch(
         self,
@@ -1312,6 +1350,13 @@ class DataParallelPPOActor(BasePPOActor):
                     non_tensor_select_keys.append(key)
         if (self.use_prefix_grouper or va_target_enabled or vzero_target_enabled) and "uid" in data.non_tensor_batch.keys():
             non_tensor_select_keys.append("uid")
+        # VLM-VAD-ROLLOUT-001 logging: per-token statistics per row, only when VAD_TOKSTATS_DIR is set.
+        tokstats_dir = os.environ.get("VAD_TOKSTATS_DIR") if self_distillation_enabled and vc_target_enabled else None
+        tokstats_rows = [] if tokstats_dir else None
+        if tokstats_dir:
+            select_keys.append("row_index")
+            if "uid" not in non_tensor_select_keys:
+                non_tensor_select_keys.append("uid")
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 
@@ -1667,6 +1712,7 @@ class DataParallelPPOActor(BasePPOActor):
                                     }
                                 )
                         loss_compute_start = time.perf_counter()
+                        tokstats = {} if tokstats_rows is not None else None
                         vopd_loss, vopd_metrics = compute_self_distillation_loss(
                             student_log_probs=log_prob,
                             teacher_log_probs=teacher_log_prob,
@@ -1689,9 +1735,19 @@ class DataParallelPPOActor(BasePPOActor):
                             batch_num_tokens=self.config.global_batch_info.get("batch_num_tokens"),
                             global_batch_size=self.config.global_batch_info.get("global_batch_size"),
                             loss_scale_factor=self.config.global_batch_info.get("loss_scale_factor"),
+                            tokstats_out=tokstats,
                         )
                         loss_compute_time = time.perf_counter() - loss_compute_start
                         stage_wall_time_totals["timing_s/update_actor/loss_compute"] += loss_compute_time
+                        if tokstats is not None:
+                            tokstats_rows.extend(
+                                self._collect_tokstats_rows(
+                                    tokstats=tokstats,
+                                    response_mask=response_mask,
+                                    row_index=model_inputs["row_index"],
+                                    uids=model_inputs["uid"],
+                                )
+                            )
 
                         vopd_metrics["self_distillation/empty_target_batch"] = self_distillation_mask.sum().item() == 0
                         micro_batch_metrics.update(vopd_metrics)
@@ -1801,6 +1857,8 @@ class DataParallelPPOActor(BasePPOActor):
                     stage_wall_time_totals["timing_s/update_actor/optimizer_step"] += optimizer_step_time
                 append_to_dict(metrics, mini_batch_metrics)
         self.actor_optimizer.zero_grad()
+        if tokstats_rows:
+            self._write_tokstats_rows(tokstats_dir=tokstats_dir, meta_info=data.meta_info, rows=tokstats_rows)
         if self_distillation_enabled and distill_dump_chunks:
             self._dump_self_distillation_log_probs(
                 meta_info=data.meta_info,

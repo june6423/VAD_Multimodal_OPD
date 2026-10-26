@@ -1197,7 +1197,10 @@ def compute_self_distillation_loss(
     va_high_group_mask: Optional[torch.Tensor] = None,
     vzero_rollout_weights: Optional[torch.Tensor] = None,
     policy_config: Optional[Any] = None,
+    tokstats_out: Optional[dict[str, torch.Tensor]] = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
+    # tokstats_out: the actor passes a dict only when VAD_TOKSTATS_DIR is set. In VC mode the dict then
+    # receives the detached per-token tensors r_norm, rho, jsd, and anchor_jsd of shape (bsz, response_length).
 
     metrics = {}
 
@@ -1533,6 +1536,14 @@ def compute_self_distillation_loss(
                 verl_F.masked_sum(vc_anchor_eta * anchor_weight * anchor_per_token_loss, loss_mask)
                 / valid_token_count_for_metrics
             ).detach().item()
+
+        if tokstats_out is not None and target_mode == "vc":
+            # Logging only: recompute the per-token divergences without a graph. The loss above is unchanged.
+            with torch.no_grad():
+                tokstats_out["r_norm"] = r_norm.detach()
+                tokstats_out["rho"] = vc_rho
+                tokstats_out["jsd"] = alpha_divergence_token_loss(teacher_distill_log_probs).detach()
+                tokstats_out["anchor_jsd"] = alpha_divergence_token_loss(vc_full_teacher_log_probs).detach()
     else:
         assert self_distillation_config.alpha == 1.0, "Only reverse KL is supported for non-full-logit distillation"
         log_ratio = student_log_probs - teacher_log_probs

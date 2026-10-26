@@ -535,6 +535,9 @@ class RayPPOTrainer:
             sample_gts = [item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in batch]
 
             reward_extra_infos_to_dump = reward_extra_infos_dict.copy()
+            if os.environ.get("VAD_TOKSTATS_DIR") and "row_index" in batch.batch.keys():
+                reward_extra_infos_to_dump["uid"] = [str(uid) for uid in batch.non_tensor_batch["uid"]]
+                reward_extra_infos_to_dump["row_index"] = batch.batch["row_index"].tolist()
             if "request_id" in batch.non_tensor_batch:
                 reward_extra_infos_dict.setdefault(
                     "request_id",
@@ -2939,6 +2942,11 @@ class RayPPOTrainer:
                             critic_output = self._update_critic(batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
+
+                    # VLM-VAD-ROLLOUT-001 logging: the position of each row in the step batch. The actor writes it
+                    # into the token statistics and _log_rollout_data writes it into the rollout dump.
+                    if os.environ.get("VAD_TOKSTATS_DIR"):
+                        batch.batch["row_index"] = torch.arange(len(batch), dtype=torch.long)
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
