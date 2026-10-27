@@ -8,8 +8,6 @@ import torch
 
 from verl import DataProto
 from verl.trainer.ppo.core_algos import compute_self_distillation_loss
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
-from verl.workers.actor.dp_actor import DataParallelPPOActor
 from verl.workers.config.actor import SelfDistillationConfig
 
 VOCAB = 300
@@ -110,6 +108,10 @@ class FakeTokenizer:
 
 
 def test_g2_dump_rows_join_token_statistics(tmp_path, monkeypatch):
+    # G2 alone needs the trainer and the actor modules. G1 needs only core_algos.
+    from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+    from verl.workers.actor.dp_actor import DataParallelPPOActor
+
     monkeypatch.setenv("VAD_TOKSTATS_DIR", str(tmp_path / "tokstats"))
     generator = torch.Generator().manual_seed(1)
     prompts, siblings, length = 2, 8, 7
