@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """A0 smoke check for VLM-VAD-ROLLOUT-001 (HANDOFF-VLM-VAD-ROLLOUT-001-R4, Part A item 4, gate G4).
 
 Usage: python3 scripts/vad_rollout/smoke_check.py <A0 output root> <out dir>
