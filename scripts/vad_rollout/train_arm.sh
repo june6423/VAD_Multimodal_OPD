@@ -41,7 +41,8 @@ export TRAINER_N_GPUS_PER_NODE=6
 export MODEL_PATH="$data/models/Qwen3.5-4B"
 export TEACHER_MODEL_PATH="$MODEL_PATH"
 export TASK_TRAIN_FILE="$data/vad/train_vad.parquet"
-export BENCHMARK_EVAL_FILE="$data/vad/benchmarks/opd_fast_benchmarks.parquet"
+# DIRECTIVE-VLM-VAD-ROLLOUT-001-003: the R4 in-training validation set has no hrbench-8k.
+export BENCHMARK_EVAL_FILE="${BENCHMARK_EVAL_FILE:-$data/vad/benchmarks/opd_fast_benchmarks_no8k.parquet}"
 export EXPERIMENT_NAME="$arm"
 export TRAINER_DEFAULT_LOCAL_DIR="$out/checkpoints"
 export TRAINER_ROLLOUT_DATA_DIR="$out/rollouts"
