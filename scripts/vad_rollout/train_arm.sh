@@ -8,7 +8,8 @@
 # MODEL_PATH and TEACHER_MODEL_PATH (local Qwen3.5-4B), TASK_TRAIN_FILE and BENCHMARK_EVAL_FILE (local
 # data), EXPERIMENT_NAME=<arm>, TRAINER_DEFAULT_LOCAL_DIR and TRAINER_ROLLOUT_DATA_DIR under <output_root>,
 # TRAINER_MAX_ACTOR_CKPT_TO_KEEP=3, BENCHMARK_EVAL_JUDGE_API_BASE and BENCHMARK_EVAL_JUDGE_MODEL (Mistral
-# judge), WANDB_API_KEY from $WANDB_ENV_FILE, VAD_TOKSTATS_DIR=<output_root>/tokstats, ROLLOUT_N=1 for A2.
+# judge), WANDB_API_KEY from $WANDB_ENV_FILE, VAD_TOKSTATS_DIR=<output_root>/tokstats, ROLLOUT_N=1 for A2,
+# MAX_MODEL_LEN=17920 (rollout context; ROLLOUT_MAX_NUM_BATCHED_TOKENS follows it in train_vad.sh line 79).
 # Arm A0 also takes TOTAL_TRAINING_STEPS and TRAINER_SAVE_FREQ from the environment (2 and 2 for the smoke).
 # --dry-run passes --dry-run to train_vad.sh and prints the overrides (secret-named variables as <set> or
 # <unset>), the resolved values, and the main_ppo argument list of train_vad.sh lines 242-357.
@@ -40,9 +41,11 @@ export PATH="$env_root/vad/bin:$PATH"
 export TRAINER_N_GPUS_PER_NODE=6
 export MODEL_PATH="$data/models/Qwen3.5-4B"
 export TEACHER_MODEL_PATH="$MODEL_PATH"
-# Researcher decision of 2026-10-29: rows with prompt tokens >= 9216 are skipped (prompt_filter.sh).
-export TASK_TRAIN_FILE="${TASK_TRAIN_FILE:-$data/vad/train_vad_le9216.parquet}"
-export BENCHMARK_EVAL_FILE="${BENCHMARK_EVAL_FILE:-$data/vad/benchmarks/opd_fast_benchmarks_le9216.parquet}"
+export TASK_TRAIN_FILE="$data/vad/train_vad.parquet"
+export BENCHMARK_EVAL_FILE="$data/vad/benchmarks/opd_fast_benchmarks.parquet"
+# Researcher decision of 2026-10-29: the response stays at MAX_RESPONSE_LENGTH 1024 and the rollout context
+# grows so that the longest validation prompt (16467 tokens, TASK-016) plus 1024 fits.
+export MAX_MODEL_LEN=17920
 export EXPERIMENT_NAME="$arm"
 export TRAINER_DEFAULT_LOCAL_DIR="$out/checkpoints"
 export TRAINER_ROLLOUT_DATA_DIR="$out/rollouts"
@@ -61,7 +64,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 overrides=(CUDA_VISIBLE_DEVICES TRAINER_N_GPUS_PER_NODE MODEL_PATH TEACHER_MODEL_PATH TASK_TRAIN_FILE
   BENCHMARK_EVAL_FILE EXPERIMENT_NAME TRAINER_DEFAULT_LOCAL_DIR TRAINER_ROLLOUT_DATA_DIR
   TRAINER_MAX_ACTOR_CKPT_TO_KEEP BENCHMARK_EVAL_JUDGE_API_BASE BENCHMARK_EVAL_JUDGE_MODEL VAD_TOKSTATS_DIR
-  ROLLOUT_N TOTAL_TRAINING_STEPS TRAINER_SAVE_FREQ)
+  ROLLOUT_N TOTAL_TRAINING_STEPS TRAINER_SAVE_FREQ MAX_MODEL_LEN)
 print_overrides() {
   echo "== environment overrides of train_arm.sh $arm (secret-named variables as <set> or <unset>)"
   local name
