@@ -7,7 +7,11 @@
 #                    --no-deps, pip install -e . --no-deps, flash-attn and causal-conv1d==1.6.1 from source).
 #                    The source builds use the docker/Dockerfile variables of the vision-opd workspace at
 #                    ed471085 with TORCH_CUDA_ARCH_LIST=12.0 (sm_120, RTX PRO 6000).
-#   $ENV_ROOT/judge  python 3.11 with vllm==0.28.0 (the toolchain of TASK-VLM-VAD-REPRO-001-016).
+#   $ENV_ROOT/judge  python 3.11 with vllm==0.28.0 and transformers==5.16.1 (the toolchain of
+#                    TASK-VLM-VAD-REPRO-001-016; vllm 0.28.0 fails on PixtralRotaryEmbedding with
+#                    transformers 5.21.0, TASK-VLM-VAD-ROLLOUT-001-006, DIRECTIVE-VLM-VAD-ROLLOUT-001-002).
+# ENV_INSTALL_ONLY=judge runs only the judge steps, leaves the VAD environment unchanged, and writes
+# pip-freeze-judge-before.txt and the diff of the judge environment.
 # Records under <output_root>: ENV_INSTALL.txt, env_install.log, pip-freeze-vad.txt, pip-freeze-judge.txt.
 # ENV_INSTALL.txt holds the step exit codes, the nvcc and driver versions, and the SASS architectures of
 # the flash-attn and causal-conv1d binaries (cuobjdump --list-elf). A step that exists is skipped.
@@ -51,6 +55,10 @@ step() {
   echo "== driver"; nvidia-smi --query-gpu=index,name,driver_version,compute_cap --format=csv
 } >> "$log" 2>&1
 
+only_judge=0
+[[ "${ENV_INSTALL_ONLY:-}" == judge ]] && only_judge=1
+echo "== ENV_INSTALL_ONLY ${ENV_INSTALL_ONLY:-<unset>}" >> "$log"
+if [[ $only_judge -eq 0 ]]; then
 if [[ ! -x "$conda" ]]; then
   url="https://github.com/conda-forge/miniforge/releases/download/${miniforge_version}/Miniforge3-${miniforge_version}-Linux-x86_64.sh"
   if command -v wget > /dev/null; then fetch=(wget -q -O "$env_root/miniforge.sh" "$url"); else fetch=(curl -fsSL -o "$env_root/miniforge.sh" "$url"); fi
@@ -69,13 +77,18 @@ step vad-flash-attn env CUDA_HOME="$cuda_home" PATH="$vad/bin:$cuda_home/bin:$PA
 step vad-causal-conv1d env CUDA_HOME="$cuda_home" PATH="$vad/bin:$cuda_home/bin:$PATH" TORCH_CUDA_ARCH_LIST=12.0 \
   CAUSAL_CONV1D_FORCE_BUILD=TRUE MAX_JOBS="$jobs" \
   "$vad/bin/pip" install causal-conv1d==1.6.1 --no-build-isolation
+fi
 
+[[ -x "$judge/bin/python" ]] && "$judge/bin/pip" freeze > "$out/pip-freeze-judge-before.txt" 2>> "$log"
 [[ -x "$judge/bin/python" ]] || step judge-create "$conda" create -p "$judge" python=3.11 -y
 step judge-pip-upgrade "$judge/bin/pip" install --upgrade pip
-step judge-vllm "$judge/bin/pip" install vllm==0.28.0
+step judge-vllm "$judge/bin/pip" install vllm==0.28.0 transformers==5.16.1
 
 "$vad/bin/pip" freeze > "$out/pip-freeze-vad.txt" 2>> "$log"
 "$judge/bin/pip" freeze > "$out/pip-freeze-judge.txt" 2>> "$log"
+if [[ -f "$out/pip-freeze-judge-before.txt" ]]; then
+  { echo "== judge environment diff (before -> after)"; diff "$out/pip-freeze-judge-before.txt" "$out/pip-freeze-judge.txt"; } >> "$log"
+fi
 {
   echo "== pip freeze lines: vad $(wc -l < "$out/pip-freeze-vad.txt") judge $(wc -l < "$out/pip-freeze-judge.txt")"
   grep -i -E '^(torch|vllm|flash[-_]attn|causal[-_]conv1d|transformers|verl|vad[-_]opd)[= @]' "$out/pip-freeze-vad.txt"
