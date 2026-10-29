@@ -40,9 +40,9 @@ export PATH="$env_root/vad/bin:$PATH"
 export TRAINER_N_GPUS_PER_NODE=6
 export MODEL_PATH="$data/models/Qwen3.5-4B"
 export TEACHER_MODEL_PATH="$MODEL_PATH"
-export TASK_TRAIN_FILE="$data/vad/train_vad.parquet"
-# DIRECTIVE-VLM-VAD-ROLLOUT-001-003: the R4 in-training validation set has no hrbench-8k.
-export BENCHMARK_EVAL_FILE="${BENCHMARK_EVAL_FILE:-$data/vad/benchmarks/opd_fast_benchmarks_no8k.parquet}"
+# Researcher decision of 2026-10-29: rows with prompt tokens >= 9216 are skipped (prompt_filter.sh).
+export TASK_TRAIN_FILE="${TASK_TRAIN_FILE:-$data/vad/train_vad_le9216.parquet}"
+export BENCHMARK_EVAL_FILE="${BENCHMARK_EVAL_FILE:-$data/vad/benchmarks/opd_fast_benchmarks_le9216.parquet}"
 export EXPERIMENT_NAME="$arm"
 export TRAINER_DEFAULT_LOCAL_DIR="$out/checkpoints"
 export TRAINER_ROLLOUT_DATA_DIR="$out/rollouts"
