@@ -163,9 +163,9 @@ def main():
     del both, sep
 
     # Teacher check on the 16 trajectories.
-    g.run_teacher(ctx, out)
+    g.run_teacher(ctx, out, 0, 1)
     report["teacher_flags"] = stats.summarize_teacher(
-        [{"correct": t["correct"], "flag": t["flag"], "gap": t["gap"]} for t in map(json.loads, open(out / "teacher.jsonl"))])
+        [{"correct": t["correct"], "flag": t["flag"], "gap": t["gap"]} for t in g.load_teacher(out).values()])
 
     # Transfer cost of one host-stored Gram vector (copy to pinned memory, then one GPU dot against it).
     vec = [torch.randn(p.shape, device="cuda") for p in ctx.params]

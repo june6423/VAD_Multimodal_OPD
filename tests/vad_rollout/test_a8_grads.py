@@ -46,7 +46,7 @@ def test_summarize_on_synthetic_pass_files(tmp_path):
     rows = [{"traj": r["id"], "prompt_pos": r["prompt"], "correct": r["correct"]} for r in pool]
     (tmp_path / "rollouts.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     flag = {r["id"]: r["flag"] for r in pool}
-    (tmp_path / "teacher.jsonl").write_text("".join(
+    (tmp_path / "teacher_0.jsonl").write_text("".join(
         json.dumps({"traj": r["traj"], "correct": r["correct"], "flag": flag[r["traj"]], "gap": 0.0 if r["correct"] else -1.0}) + "\n"
         for r in rows))
     by_prompt = {}

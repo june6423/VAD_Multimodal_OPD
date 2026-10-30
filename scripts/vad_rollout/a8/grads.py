@@ -4,7 +4,7 @@ One process uses one GPU. No parameter changes: gradients come from torch.autogr
 Sums are fp32 on the GPU. Earlier sums of a Gram matrix wait in host memory. No per-trajectory gradient is stored.
 
 Usage: python grads.py <repo root> <A1 COMMAND.txt> <model dir> <rollouts.jsonl> <out dir> <pass> [options]
-  teacher                      teacher check of every trajectory -> teacher.jsonl
+  teacher <shard> <shards>     teacher check of every trajectory -> teacher_<shard>.jsonl
   within <O> <shard> <shards>  within-prompt unit-vector sums and norms -> within_<O>_<shard>.jsonl
   trials <O> <pool> <shard> <shards>  across-prompt trials (pool: pooled, f1, f0) -> trials_<O>_<pool>_<shard>.jsonl
   cross <shard> <shards>       cross-objective cosines -> cross_<shard>.jsonl
@@ -125,9 +125,9 @@ def check_finite(value: float, what: str):
         raise SystemExit(f"STOP R9 stop condition 3: non-finite gradient norm ({what})")
 
 
-def run_teacher(ctx: Context, out: Path):
-    with open(out / "teacher.jsonl", "w") as f:
-        for r in ctx.rows:
+def run_teacher(ctx: Context, out: Path, shard: int, shards: int):
+    with open(out / f"teacher_{shard}.jsonl", "w") as f:
+        for r in ctx.rows[shard::shards]:
             rec = {"traj": r["traj"], "correct": r["correct"], "letter": r["letter"], "gt": r["gt"], "flag": "fx", "gap": None}
             found = obj.answer_letter_char(r["response_text"])
             pos = obj.letter_token(ctx.tokenizer, r["response_ids"], found[0]) if found else None
@@ -141,8 +141,12 @@ def run_teacher(ctx: Context, out: Path):
             f.write(json.dumps(rec) + "\n")
 
 
+def load_teacher(out: Path) -> dict[int, dict]:
+    return {r["traj"]: r for path in sorted(glob.glob(str(out / "teacher_*.jsonl"))) for r in map(json.loads, open(path))}
+
+
 def load_flags(out: Path) -> dict[int, str]:
-    return {r["traj"]: r["flag"] for r in map(json.loads, open(out / "teacher.jsonl"))}
+    return {t: r["flag"] for t, r in load_teacher(out).items()}
 
 
 def run_within(ctx: Context, out: Path, name: str, shard: int, shards: int):
@@ -231,7 +235,7 @@ def run_cross(ctx: Context, out: Path, shard: int, shards: int):
 
 def summarize(out: Path, rollouts_path: str):
     rows = {r["traj"]: r for r in map(json.loads, open(rollouts_path))}
-    teacher = {r["traj"]: r for r in map(json.loads, open(out / "teacher.jsonl"))}
+    teacher = load_teacher(out)
     by_prompt = defaultdict(list)
     for r in rows.values():
         by_prompt[r["prompt_pos"]].append(r["correct"])
@@ -288,7 +292,7 @@ def main():
         return
     ctx = Context(repo, command_txt, model_dir, rollouts)
     if which == "teacher":
-        run_teacher(ctx, out)
+        run_teacher(ctx, out, int(args[0]), int(args[1]))
     elif which == "within":
         run_within(ctx, out, args[0], int(args[1]), int(args[2]))
     elif which == "trials":
