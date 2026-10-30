@@ -3,7 +3,8 @@
 # Usage: scripts/vad_rollout/keep_check.sh <arm output_root> <output_root>
 # Writes <output_root>/KEEP_CHECK.txt: keep/KEEP.json without its per-file SHA-256 map, the file count and bytes
 # of keep/global_step_80, latest_checkpointed_iteration.txt, the size of every checkpoints/global_step_* folder,
-# the last 20 lines of ckpt_keep.log, and df -h of the arm output root. It changes no file of the arm. No GPU.
+# the last 20 lines of ckpt_keep.log, df -h of the arm output root, and the cgroup memory limit and usage of the
+# host (DIRECTIVE-VLM-VAD-ROLLOUT-001-010, DT answer of 2026-10-30). It changes no file of the arm. No GPU.
 # Exit 0 only when KEEP.json has status COPIED and verified true.
 set -uo pipefail
 
@@ -34,6 +35,12 @@ EOF
   tail -n 20 "$arm/ckpt_keep.log"
   echo "== df -h"
   df -h "$arm"
+  echo "== cgroup memory (v2 memory.max, memory.current; v1 memory.limit_in_bytes, memory.usage_in_bytes)"
+  for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory/memory.limit_in_bytes \
+    /sys/fs/cgroup/memory/memory.usage_in_bytes; do
+    [[ -r "$f" ]] && echo "$f $(cat "$f")"
+  done
+  grep -E '^(MemTotal|MemAvailable):' /proc/meminfo
 } > "$out/KEEP_CHECK.txt" 2>&1
 cat "$out/KEEP_CHECK.txt"
 grep -q '"status": "COPIED"' "$out/KEEP_CHECK.txt" && grep -q '"verified": true' "$out/KEEP_CHECK.txt"
