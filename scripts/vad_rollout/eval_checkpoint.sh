@@ -7,7 +7,8 @@
 # the Mistral judge and PARALLEL_WORKERS=64, then stop the server. RUN_DIR is <output_root>/run, so a
 # restarted task resumes from the answer files. The served name is <arm>_step<step>. The script copies
 # summary.json, summary.md, the audits and the score, judge and audit logs to <output_root>/ and writes
-# <output_root>/EVAL.txt with the stage times.
+# <output_root>/EVAL.txt with the stage times. Each log line copied into EVAL.txt is cut to 400 characters
+# (GNU cut counts bytes), so that EVAL.txt stays below the 1 MiB fetch limit (R8 Part A item 4).
 set -uo pipefail
 
 arm="$1"
@@ -68,14 +69,14 @@ for _ in $(seq 1 240); do
   sleep 5
 done
 if [[ $ready -ne 1 ]]; then
-  { echo "model server not ready"; tail -n 80 "$out/model_server.log"; } >> "$log"
+  { echo "model server not ready"; tail -n 80 "$out/model_server.log" | cut -c1-400; } >> "$log"
   stop_server
   exit 2
 fi
 t1=$(date +%s)
 {
   echo "== server ready after $((t1 - t0)) s at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  grep '^COMMAND' "$out/model_server.log" | tail -n 1
+  grep '^COMMAND' "$out/model_server.log" | tail -n 1 | cut -c1-400
   nvidia-smi --query-gpu=index,uuid,memory.used --format=csv
 } >> "$log" 2>&1
 
@@ -89,7 +90,7 @@ stop_server
 {
   echo "evaluate_official exit $code wall_seconds $((t2 - t1))"
   echo "-- evaluate_official.log tail (progress lines removed)"
-  grep -v -E 'it/s\]|s/it\]' "$out/evaluate_official.log" | tail -n 30
+  grep -v -E 'it/s\]|s/it\]' "$out/evaluate_official.log" | tail -n 30 | cut -c1-400
   echo "-- stage end times (log mtime, UTC)"
   for b in "${benchmarks[@]}"; do
     for stage in infer answer_audit judge audit score; do
