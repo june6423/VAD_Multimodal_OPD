@@ -13,6 +13,8 @@ split="$3"
 shift 3
 mkdir -p "$out"
 export PATH="$env_root/vad/bin:$PATH"
+# Deterministic flash-attention backward: the G3 repeat cosine reaches 0.9999 only with it (TASK-046).
+export FLASH_ATTENTION_DETERMINISTIC=1
 unset VAD_TOKSTATS_DIR
 cd "$root" || exit 1
 {

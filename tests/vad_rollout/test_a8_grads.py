@@ -18,6 +18,10 @@ grads = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(grads)
 stats = grads.stats
 
+spec = importlib.util.spec_from_file_location("a8_g3", A8 / "g3.py")
+g3 = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g3)
+
 TEST_STATS = Path(__file__).resolve().parent / "test_a8_stats.py"
 spec = importlib.util.spec_from_file_location("a8_test_stats", TEST_STATS)
 synthetic = importlib.util.module_from_spec(spec)
@@ -90,3 +94,24 @@ def test_summarize_on_synthetic_pass_files(tmp_path):
     assert out["cross"]["all"]["all"]["O3|O4"]["count"] == 50
     assert out["fx"]["count"] == sum(1 for r in pool if r["flag"] == "fx")
     assert out["trajectories"] == 3000
+
+
+def test_shard_jobs_by_size_lowers_the_largest_shard():
+    jobs = g3.plan_jobs(375)
+    assert [(n, sum(1 for j in jobs if j[0] == n)) for n in (4, 16, 375)] == [(4, 64), (16, 8), (375, 2)]
+
+    def load(shard):
+        return sum(4 * n for n, _, _ in shard)
+
+    round_robin = [jobs[s::6] for s in range(6)]
+    by_size = grads.shard_jobs(jobs, 6)
+    assert max(map(load, round_robin)) == 1740  # the old order: one largest-n trial plus small ones on shards 0 and 1
+    assert max(map(load, by_size)) == 1500  # one largest-n trial alone, the other shards share the small ones
+    assert sorted(j for shard in by_size for j in shard) == sorted(jobs)
+    assert grads.shard_jobs(jobs, 6) == by_size  # every process gets the same assignment
+
+
+def test_makespan_follows_the_schedule_order():
+    assert g3.makespan([3, 1, 1, 1], 2) == 3
+    assert g3.makespan([1, 1, 3], 2) == 4
+    assert g3.plan_jobs(10) == [(4, i, None) for i in range(64)] + [(10, i, None) for i in range(2)]

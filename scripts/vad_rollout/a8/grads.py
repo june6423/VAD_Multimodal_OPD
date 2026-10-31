@@ -187,6 +187,19 @@ def pool_rows(ctx: Context, flags: dict[int, str], which: str) -> list[dict]:
             if which == "pooled" or flags[r["traj"]] == which]
 
 
+def shard_jobs(jobs: list[tuple], shards: int) -> list[list[tuple]]:
+    """Trial jobs (n, index, trial) per shard: largest trial first, to the least loaded shard (4n gradients each).
+
+    Every process draws the same plan, so every process gets the same assignment. A trial stays in one process.
+    """
+    loads, out = [0] * shards, [[] for _ in range(shards)]
+    for job in sorted(jobs, key=lambda j: -j[0]):
+        s = loads.index(min(loads))
+        out[s].append(job)
+        loads[s] += 4 * job[0]
+    return out
+
+
 def run_trials(ctx: Context, out: Path, name: str, which: str, shard: int, shards: int):
     flags = load_flags(out)
     plan = stats.trial_plan(pool_rows(ctx, flags, which), TRIAL_SEED)
@@ -194,7 +207,7 @@ def run_trials(ctx: Context, out: Path, name: str, which: str, shard: int, shard
     with open(out / f"trials_{name}_{which}_{shard}.jsonl", "w") as f:
         f.write(json.dumps({"plan": [{k: e[k] for k in ("n", "count", "largest_n")} | {"possible": e["trials"] is not None}
                                      for e in plan]}) + "\n")
-        for n, i, trial in jobs[shard::shards]:
+        for n, i, trial in shard_jobs(jobs, shards)[shard]:
             start = time.time()
             gram = Gram(ctx.pool)
             for g_i, group in enumerate(stats.GROUPS):

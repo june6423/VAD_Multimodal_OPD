@@ -22,15 +22,27 @@ cd "$root" || exit 1
   grep -E "MemTotal|MemAvailable" /proc/meminfo
 } > "$out/G3_ENV.txt" 2>&1
 start=$(date +%s)
+# Each stage runs with hostmem.py beside it: host MemAvailable and the RSS of its process tree -> G3_HOSTMEM.txt.
 python3 scripts/vad_rollout/a8/generate.py "$root" "$command_txt" "$data/models/Qwen3.5-4B" "$out/rollouts_g3.jsonl" \
-  0 188 375 8 > "$out/generate.log" 2>&1
+  0 188 375 8 > "$out/generate.log" 2>&1 &
+pid=$!
+python3 scripts/vad_rollout/a8/hostmem.py "$pid" generate "$out/G3_HOSTMEM.txt" &
+watch=$!
+wait "$pid"
 status=$?
+wait "$watch"
 generation_seconds=$(( $(date +%s) - start ))
 echo "generate exit $status seconds $generation_seconds" >> "$out/G3_ENV.txt"
 [[ $status -eq 0 ]] || exit "$status"
 sha256sum "$out/rollouts_g3.jsonl" >> "$out/G3_ENV.txt"
 python3 scripts/vad_rollout/a8/g3.py "$root" "$command_txt" "$out/rollouts_g3.jsonl" "$out" "$generation_seconds" \
-  2>&1 | tee "$out/g3.log"
-status=${PIPESTATUS[0]}
+  > "$out/g3.log" 2>&1 &
+pid=$!
+python3 scripts/vad_rollout/a8/hostmem.py "$pid" g3 "$out/G3_HOSTMEM.txt" &
+watch=$!
+wait "$pid"
+status=$?
+wait "$watch"
+cat "$out/g3.log"
 echo "g3 exit $status" >> "$out/G3_ENV.txt"
 exit "$status"
