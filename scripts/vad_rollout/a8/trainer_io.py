@@ -217,14 +217,13 @@ def load_model(path: str, cfg, train: bool):
     return model.cuda()
 
 
-def init_single_rank(port: int = 29531) -> None:
-    """One-rank NCCL group: DataParallelPPOActor calls get_rank() and rearrange_micro_batches calls all_reduce."""
-    import os
+def init_single_rank() -> None:
+    """One-rank NCCL group: DataParallelPPOActor calls get_rank() and rearrange_micro_batches calls all_reduce.
 
-    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-    os.environ.setdefault("MASTER_PORT", str(port))
+    The store is in-process (HashStore), so concurrent jobs on one host do not compete for a TCP port (TASK-054).
+    """
     if not torch.distributed.is_initialized():
-        torch.distributed.init_process_group("nccl", rank=0, world_size=1)
+        torch.distributed.init_process_group("nccl", store=torch.distributed.HashStore(), rank=0, world_size=1)
 
 
 def make_actor(cfg, student, teacher):
