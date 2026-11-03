@@ -57,20 +57,18 @@ def dot(a: list[torch.Tensor], b: list[torch.Tensor], d: list[torch.Tensor] | No
     return float(total)
 
 
-def gram_row(new: list[torch.Tensor], earlier: list[list[torch.Tensor]], d: list[torch.Tensor]) -> tuple[list[float], list[float]]:
-    """Dot products of a new sibling with the earlier siblings and with itself (last entry), raw and with D."""
-    vecs = earlier + [new]
-    return [dot(new, v) for v in vecs], [dot(new, v, d) for v in vecs]
-
-
-def full_gram(rows: list[list[float]]) -> list[list[float]]:
-    """Symmetric matrix from the lower-triangle rows of gram_row."""
-    n = len(rows)
-    g = [[0.0] * n for _ in range(n)]
-    for i, row in enumerate(rows):
-        for j, v in enumerate(row):
-            g[i][j] = g[j][i] = v
-    return g
+def sibling_gram(grads: list[list[torch.Tensor]], d: list[torch.Tensor]) -> tuple[list[list[float]], list[list[float]]]:
+    """All dot products of the siblings, raw and with D: per parameter tensor one fp64 product of the stacked rows."""
+    n = len(grads)
+    dev = grads[0][0].device
+    raw = torch.zeros((n, n), dtype=torch.float64, device=dev)
+    met = torch.zeros((n, n), dtype=torch.float64, device=dev)
+    for t in range(len(grads[0])):
+        m = torch.stack([g[t].reshape(-1) for g in grads]).double()
+        raw += m @ m.T
+        met += (m * d[t].reshape(-1).double()) @ m.T
+        del m
+    return raw.tolist(), met.tolist()
 
 
 def weighted_sum(vecs: list[list[torch.Tensor]], weights: list[float], out: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -104,8 +102,8 @@ class Store:
         """vec[name] += src (src may be on the GPU; it goes through one reusable host staging vector)."""
         acc = self._alloc(name)
         if src[0].device.type != "cpu":
-            if self.staging is None:
-                self.staging = [torch.empty(s, dtype=torch.float32, pin_memory=self.pin) for s in self.shapes]
+            if self.staging is None:  # pinned: the copy from the GPU runs at full speed
+                self.staging = [torch.empty(s, dtype=torch.float32, pin_memory=True) for s in self.shapes]
             for h, g in zip(self.staging, src):
                 h.copy_(g)
             src = self.staging
@@ -198,11 +196,7 @@ def finish_prompt(store: Store, prompt: int, fold: int, trajs: list[int], labels
 
     grads: the O4 gradients of the siblings. a_p: sum_i (r_i - mean r) grad log p(y_i), None when all weights are 0.
     """
-    raw_rows, d_rows = [], []
-    for i, g in enumerate(grads):
-        r, dm = gram_row(g, grads[:i], d)
-        raw_rows.append(r)
-        d_rows.append(dm)
+    raw, met = sibling_gram(grads, d)
     for c in CLASSES:
         for f in FLAGS:
             members = [i for i, (lab, fl) in enumerate(zip(labels, flags)) if ("C" if lab else "I") == c and fl == f]
@@ -214,7 +208,7 @@ def finish_prompt(store: Store, prompt: int, fold: int, trajs: list[int], labels
     else:
         store.add(a_name(fold), a_p, 1)
     return {"prompt": prompt, "fold": fold, "trajs": trajs, "labels": labels, "flags": flags,
-            "raw": full_gram(raw_rows), "D": full_gram(d_rows), **(extra or {})}
+            "raw": raw, "D": met, **(extra or {})}
 
 
 def gram_file(store: Store, d: list[torch.Tensor], device: str, records: list[dict], checkpoint: str, k: int = K) -> dict:
