@@ -23,6 +23,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -110,6 +111,35 @@ def rss_now_gb() -> dict:
     v = {line.split(":")[0]: int(line.split()[1]) * 1024 / 1e9 for line in open("/proc/self/status")
          if line.startswith(("RssAnon:", "RssFile:"))}
     return {"rss_anon_gb": v.get("RssAnon", float("nan")), "rss_file_gb": v.get("RssFile", float("nan"))}
+
+
+class GramMemory(threading.Thread):
+    """Memory samples during the Gram stage, one each `every` seconds and one at the stop: RssAnon and RssFile of
+    this process, anon and file of memory.stat of its cgroup (DIRECTIVE-VLM-VAD-GRAD-001-005 Decision 7)."""
+
+    def __init__(self, every: float = 30.0):
+        super().__init__(daemon=True)
+        self.every, self.samples, self.halt = every, [], threading.Event()
+        cg = next(line[3:].strip() for line in open("/proc/self/cgroup") if line.startswith("0::"))
+        self.stat = Path("/sys/fs/cgroup" + cg) / "memory.stat"
+
+    def sample(self):
+        st = {k: int(v) / 1e9 for k, v in (line.split() for line in open(self.stat)) if k in ("anon", "file")}
+        self.samples.append({"t": round(time.time(), 1), **rss_now_gb(), "cgroup_anon_gb": st["anon"],
+                             "cgroup_file_gb": st["file"]})
+
+    def run(self):
+        while not self.halt.is_set():
+            self.sample()
+            self.halt.wait(self.every)
+
+    def stop(self) -> dict:
+        self.halt.set()
+        self.join()
+        self.sample()
+        keys = ("rss_anon_gb", "rss_file_gb", "cgroup_anon_gb", "cgroup_file_gb")
+        return {"every_s": self.every, "cgroup_stat": str(self.stat),
+                **{f"max_{k}": max(s[k] for s in self.samples) for k in keys}, "samples": self.samples}
 
 
 def mem_available_gb() -> float:
@@ -219,10 +249,13 @@ def main():
             sys.exit(STOP_EXIT)
 
     ts = time.time()
+    gram_memory = GramMemory()
+    gram_memory.start()
     data = accum.gram_file(store, d, "cuda", records, name)
     tmp = out / "GRAM.json.tmp"
     tmp.write_text(json.dumps(data))
     run["gram_seconds"] = round(time.time() - ts, 1)
+    run["gram_memory"] = gram_memory.stop()
     run["vectors_allocated"] = len(set(store.vec) | set(store.files))
     with open(out / "ANSWER_POS.jsonl", "w") as fa, open(out / "TRAJ.jsonl", "w") as ft:
         for rec in sorted(records, key=lambda r: r["prompt"]):

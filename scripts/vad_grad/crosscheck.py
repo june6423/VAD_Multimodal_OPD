@@ -67,17 +67,23 @@ def main():
         del sums
     pred = stats.compute(json.loads(Path(gram_path).read_text()))["metrics"]
     summary = {"trials": n_trials, "n": 4, "seed": TRIAL_SEED, "verl": origin, "metric": metric_info, "rows": rows,
-               "compare": {}}
+               "compare": compare(rows, pred)}
+    summary["seconds"] = round(time.time() - start, 1)
+    Path(out).write_text(json.dumps(summary, indent=1))
+
+
+def compare(rows: list[dict], pred: dict) -> dict:
+    """Trial mean c_4 and its standard error next to the predicted c_4 (pred: the metrics of stats.compute)."""
+    out = {}
     for name in ("raw", "D"):
         for cls in ("C", "I"):
             vals = [r[f"c4_{cls}_{name}"] for r in rows]
             mean = sum(vals) / len(vals)
             se = math.sqrt(sum((v - mean) ** 2 for v in vals) / (len(vals) - 1) / len(vals)) if len(vals) > 1 else float("nan")
             p = pred[name]["subsets"][cls]["c_4"]
-            summary["compare"][f"{name}|{cls}"] = {"trial_mean_c4": mean, "trial_se": se, "predicted_c4": p["value"],
-                                                   "predicted_se": p["se"], "difference_in_trial_se": (mean - p["value"]) / se if se else None}
-    summary["seconds"] = round(time.time() - start, 1)
-    Path(out).write_text(json.dumps(summary, indent=1))
+            out[f"{name}|{cls}"] = {"trial_mean_c4": mean, "trial_se": se, "predicted_c4": p["value"],
+                                    "predicted_se": p["se"], "difference_in_trial_se": (mean - p["value"]) / se if se else None}
+    return out
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 """Pilot subset and FULL projection (HANDOFF-VLM-VAD-GRAD-001-R1 Part A item 10, gate G6).
 
 select: per checkpoint 4 prompts (labels of label.py): the prompt with the longest response (up to 1024 tokens), then
-  the lowest all_correct, the lowest all_wrong and the lowest mixed prompt that are not already chosen.
+  the lowest all_correct, the lowest all_wrong and the lowest mixed prompt that are not already chosen and are in a
+  fold (accum.fold_of) that no earlier chosen prompt uses. When no prompt of a role is in a free fold: the lowest
+  prompt of that role (DIRECTIVE-VLM-VAD-GRAD-001-005 Decisions 5 and 6). It prints the roles and folds.
 project: the projected FULL wall time from the pilot records of run_grad.sh:
   per trajectory: least squares of seconds on [1, total tokens, weight != 0, answer position] over the pilot
     trajectories, applied to every trajectory of the 3 checkpoints;
@@ -23,7 +25,11 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import accum  # noqa: E402
+
 CHECKPOINTS = ("step0", "step80", "step130")
+ROLES = ("longest", "all_correct", "all_wrong", "mixed")
 SAVES_PER_CHECKPOINT = 18
 FOLD_VECTORS = 7
 VECTOR_BYTES = 3569090560 * 4
@@ -40,14 +46,16 @@ def select(rollouts: str, labels_path: str) -> list[int]:
     by_prompt = defaultdict(list)
     for r in rows:
         by_prompt[r["prompt_pos"]].append(r)
+    folds = accum.fold_of(sorted(by_prompt))
     longest = max(rows, key=lambda r: (min(len(r["response_ids"]), 1024), -r["prompt_pos"]))["prompt_pos"]
     chosen = [longest]
-    for cls in ("all_correct", "all_wrong", "mixed"):
-        p = min((p for p, rs in by_prompt.items() if p not in chosen and prompt_class([labels[r["traj"]] for r in rs]) == cls),
-                default=None)
-        if p is None:
+    for cls in ROLES[1:]:
+        cands = sorted(p for p, rs in by_prompt.items() if p not in chosen and prompt_class([labels[r["traj"]] for r in rs]) == cls)
+        if not cands:
             raise SystemExit(f"STOP: no {cls} prompt")
-        chosen.append(p)
+        free = [p for p in cands if folds[p] not in {folds[c] for c in chosen}]
+        chosen.append(free[0] if free else cands[0])
+    print(f"{Path(rollouts).parent.name} pilot prompts {chosen} roles {list(ROLES)} folds {[folds[p] for p in chosen]}")
     return chosen
 
 
