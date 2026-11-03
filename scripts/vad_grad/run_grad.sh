@@ -17,7 +17,9 @@ merged="$data/rollout001/TASK-VLM-VAD-ROLLOUT-001-022/merged"
 py="$env_root/vad/bin/python"
 mkdir -p "$out"
 cd "$root" || exit 1
-export PATH="$env_root/vad/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 FLASH_ATTENTION_DETERMINISTIC=1
+# verl from this checkout, not from the editable install of the vad env (DIRECTIVE-VLM-VAD-GRAD-001-003 Decision 4).
+export PATH="$env_root/vad/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 FLASH_ATTENTION_DETERMINISTIC=1 \
+  PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}"
 unset VAD_TOKSTATS_DIR
 log="$out/RUN_GRAD.txt"
 {

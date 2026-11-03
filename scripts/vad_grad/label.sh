@@ -33,6 +33,8 @@ done
 echo "== judge ready $ready at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
 status=1
 if [[ $ready -eq 1 ]]; then
+  # verl from this checkout (DIRECTIVE-VLM-VAD-GRAD-001-003 Decision 4); the judge server keeps its own PYTHONPATH.
+  PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" \
   "$env_root/vad/bin/python" scripts/vad_grad/label.py "$root" "$out/COMMAND_B200.txt" "$out" "http://127.0.0.1:$port/v1" \
     "step0=$r053/step0/rollouts.jsonl" "step80=$r053/step80/rollouts.jsonl" "step130=$r053/step130/rollouts.jsonl" \
     > "$out/label.log" 2>&1

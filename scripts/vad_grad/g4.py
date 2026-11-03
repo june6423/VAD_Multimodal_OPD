@@ -23,6 +23,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import accum  # noqa: E402
 import moments  # noqa: E402
+import provenance  # noqa: E402
 
 a8, obj = moments.a8, moments.obj
 
@@ -33,6 +34,7 @@ def cos(a, b) -> float:
 
 def main():
     repo, command_txt, model_dir, rollouts, out = sys.argv[1:6]
+    origin = provenance.verl_origin(repo)
     start = time.time()
     ctx = a8.Context(repo, command_txt, model_dir, rollouts)
     ctx.objectives = moments.Capture(ctx.actor, ctx.params)
@@ -46,7 +48,7 @@ def main():
     a_buf = [torch.zeros(p.shape, dtype=torch.float32, device="cuda") for p in ctx.params]
     new0, rec = moments.trajectory_step(ctx, mi, 0.0, None)
     old = obj.Objectives(ctx.actor, ctx.params).gradients(mi, ["O4"])["O4"][1]
-    res = {"model_dir": model_dir, "traj": traj, "prompt": prompt, "o4_loss": rec["o4_loss"],
+    res = {"model_dir": model_dir, "verl": origin, "traj": traj, "prompt": prompt, "o4_loss": rec["o4_loss"],
            "flash_attention_deterministic": os.environ.get("FLASH_ATTENTION_DETERMINISTIC"),
            "cos_new_a8": cos(new0, old), "norm_new": math.sqrt(accum.dot(new0, new0)), "norm_a8": math.sqrt(accum.dot(old, old))}
     res["rel_norm_diff"] = abs(res["norm_new"] - res["norm_a8"]) / res["norm_a8"]

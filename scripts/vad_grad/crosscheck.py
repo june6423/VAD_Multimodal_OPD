@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import accum  # noqa: E402
 import moments  # noqa: E402
 import params as gparams  # noqa: E402
+import provenance  # noqa: E402
 import stats  # noqa: E402
 
 a8_stats = moments.a8.stats
@@ -32,6 +33,7 @@ TRIAL_SEED = 20261103
 def main():
     repo, command_txt, model_dir, rollouts, labels_path, adam_v, gram_path, out = sys.argv[1:9]
     n_trials = int(sys.argv[9]) if len(sys.argv) > 9 else 16
+    origin = provenance.verl_origin(repo)
     start = time.time()
     ctx = moments.a8.Context(repo, command_txt, model_dir, rollouts)
     ctx.objectives = moments.Capture(ctx.actor, ctx.params)
@@ -59,7 +61,8 @@ def main():
         rows.append(rec)
         del sums
     pred = stats.compute(json.loads(Path(gram_path).read_text()))["metrics"]
-    summary = {"trials": n_trials, "n": 4, "seed": TRIAL_SEED, "metric": metric_info, "rows": rows, "compare": {}}
+    summary = {"trials": n_trials, "n": 4, "seed": TRIAL_SEED, "verl": origin, "metric": metric_info, "rows": rows,
+               "compare": {}}
     for name in ("raw", "D"):
         for cls in ("C", "I"):
             vals = [r[f"c4_{cls}_{name}"] for r in rows]

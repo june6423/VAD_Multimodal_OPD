@@ -26,6 +26,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "vad_rollout" / "a8"))
+import provenance  # noqa: E402
 import trainer_io  # noqa: E402
 from permissive import permissive_label  # noqa: E402
 
@@ -104,7 +105,7 @@ def main():
     tokenizer, processor = trainer_io.tokenizer_processor(cfg)
     frame = trainer_io.load_dataset(cfg, tokenizer, processor).dataframe
     kwargs = a1_kwargs(api_base)
-    summary = {"judge": kwargs, "checkpoints": {}}
+    summary = {"judge": kwargs, "verl": provenance.verl_origin(repo), "checkpoints": {}}
     stop = False
     for name, rollouts in specs:
         start = time.time()

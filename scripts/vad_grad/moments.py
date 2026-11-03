@@ -34,6 +34,7 @@ import accum  # noqa: E402
 import grads as a8  # noqa: E402
 import objectives as obj  # noqa: E402
 import params as gparams  # noqa: E402
+import provenance  # noqa: E402
 
 STOP_EXIT = 75  # exit code of the forced stop
 
@@ -121,6 +122,8 @@ def main():
     if (out / "GRAM.json").exists():
         print(f"{name}: GRAM.json exists, nothing to do")
         return
+    run["verl"] = provenance.verl_origin(repo)
+    print(f"{name}: verl {run['verl']}")
 
     t0 = time.time()
     ctx = a8.Context(repo, command_txt, model_dir, rollouts)
