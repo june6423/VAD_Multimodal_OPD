@@ -6,7 +6,8 @@ project: the projected FULL wall time from the pilot records of run_grad.sh:
   per trajectory: least squares of seconds on [1, total tokens, weight != 0, answer position] over the pilot
     trajectories, applied to every trajectory of the 3 checkpoints;
   per prompt: the mean finish time (sibling Gram, group sums, host adds) x 375 x 3;
-  saves: the measured seconds per byte x 15 saves of the 7 vectors of one fold x 3 checkpoints;
+  saves: the measured seconds per byte x 18 saves of the 7 vectors of one fold x 3 checkpoints (15 every 25 prompts
+    and 3 before the first prompt of folds 1 to 3);
   Gram file: the pilot Gram seconds scaled from the allocated vectors to 28, x 3;
   model loads: the pilot context seconds x 4 (3 checkpoints and the cross-check);
   cross-check: 16 trials x 16 gradients at the mean weight-0 trajectory time of step 80.
@@ -23,7 +24,7 @@ from collections import defaultdict
 from pathlib import Path
 
 CHECKPOINTS = ("step0", "step80", "step130")
-SAVES_PER_CHECKPOINT = 15
+SAVES_PER_CHECKPOINT = 18
 FOLD_VECTORS = 7
 VECTOR_BYTES = 3569090560 * 4
 

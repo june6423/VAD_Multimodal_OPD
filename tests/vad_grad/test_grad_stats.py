@@ -144,6 +144,7 @@ def test_resume_gives_the_same_accumulators(tmp_path):
     store2 = accum.Store(shapes)
     progress2 = accum.Progress(tmp_path)
     progress2.restore(store2)
+    assert store2.vec == {}  # a restore loads no vector into host memory (the b200 container has 150 GiB)
     records2 = list(progress2.state["prompts"])
     assert len(records2) == 6
     run(store2, progress2, [p for p in order if p not in progress2.done], records2)
@@ -155,3 +156,40 @@ def test_resume_gives_the_same_accumulators(tmp_path):
     assert sorted(r["prompt"] for r in records2) == prompts
     files = sorted(p.name for p in tmp_path.glob("*.safetensors"))
     assert len(files) == len(set(f.split(".v")[0] for f in files))  # one version of each vector is left
+
+
+def test_one_fold_in_host_memory(tmp_path):
+    """The moments.py loop: prompts in fold order, accum.switch_fold before the first prompt of each fold, a save
+    every 3 prompts. The host never holds more than the 7 vectors of one fold, and the Gram file (vectors of the
+    earlier folds read from their files) equals the Gram file of a run with all 28 vectors in host memory."""
+    torch.manual_seed(2)
+    shapes = [torch.Size([4, 2]), torch.Size([3])]
+    d = [torch.rand(s) + 0.5 for s in shapes]
+    prompts = list(range(12))
+    folds = accum.fold_of(prompts)
+    order = sorted(prompts, key=lambda p: (folds[p], p))
+    data = {p: ([[torch.randn(s) for s in shapes] for _ in range(4)], [1, 0, 1, 1], ["f1", "f0", "fx", "f1"]) for p in prompts}
+    buf = [torch.zeros(s) for s in shapes]
+
+    ref, ref_records = accum.Store(shapes), []
+    for p in order:
+        grads, labels, flags = data[p]
+        ref_records.append(accum.finish_prompt(ref, p, folds[p], [p], labels, flags, grads, d, grads[0], buf))
+    expected = accum.gram_file(ref, d, "cpu", ref_records, "x")
+
+    store, progress, records, fold, most = accum.Store(shapes), accum.Progress(tmp_path), [], None, 0
+    for n, p in enumerate(order):
+        if folds[p] != fold:
+            accum.switch_fold(store, progress, records, folds[p])
+            fold = folds[p]
+        grads, labels, flags = data[p]
+        records.append(accum.finish_prompt(store, p, folds[p], [p], labels, flags, grads, d, grads[0], buf))
+        most = max(most, len(store.vec))
+        if (n + 1) % 3 == 0:
+            progress.save(store, records)
+    got = accum.gram_file(store, d, "cpu", records, "x")
+    assert most <= 7
+    assert len(store.vec) <= 7
+    assert got["raw"] == expected["raw"]
+    assert got["D"] == expected["D"]
+    assert got["counts"] == expected["counts"]

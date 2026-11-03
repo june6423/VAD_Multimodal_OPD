@@ -7,7 +7,9 @@ probabilities of the ground-truth and the sampled letter under the student and t
 x-minus views, at the position of the TASK-056 teacher check. Per prompt: the 8 sibling gradients stay on the GPU
 (bf16, as autograd returns them); accum.finish_prompt writes the sibling Gram (raw and with D), adds the group sums to
 S|fold|class|flag and the prompt term to A|fold on the host. Prompts run in fold order. A save every SAVE_EVERY
-prompts; a restart resumes. At the end: GRAM.json, ANSWER_POS.jsonl, TRAJ.jsonl, and the accumulators are deleted.
+prompts and before the first prompt of each fold; the host keeps only the 7 vectors of the current fold (the b200
+container has 150 GiB). A restart resumes. At the end: GRAM.json (the earlier folds read from their files),
+ANSWER_POS.jsonl, TRAJ.jsonl, and the accumulators are deleted.
 
 Usage: python moments.py <repo root> <A1 COMMAND.txt> <model dir> <rollouts.jsonl> <labels.jsonl> <teacher dir>
          <exp_avg_sq safetensors> <out dir> <checkpoint name> [prompt list json]
@@ -152,7 +154,20 @@ def main():
     buf = [torch.zeros(p.shape, dtype=torch.float32, device="cuda") for p in ctx.params]
     a_buf = [torch.zeros(p.shape, dtype=torch.float32, device="cuda") for p in ctx.params]
     torch.cuda.reset_peak_memory_stats()
+
+    def record_save(folds_saved: list[int], ts: float):
+        run["saves"].append({"after_prompts": len(records), "folds": folds_saved, "seconds": round(time.time() - ts, 1),
+                             "bytes": 7 * len(folds_saved) * sum(4 * x.numel() for x in ctx.params),
+                             "mem_available_gb": mem_available_gb(), "peak_rss_gb": peak_rss_gb()})
+
+    fold = None
     for n, p in enumerate(todo):
+        if folds[p] != fold:  # one fold in host memory
+            ts = time.time()
+            folds_saved = accum.switch_fold(store, progress, records, folds[p])
+            if folds_saved:
+                record_save(folds_saved, ts)
+            fold = folds[p]
         start = time.time()
         rows = sorted(by_prompt[p], key=lambda r: r["sibling"])
         labs = [int(labels[r["traj"]]["label"]) for r in rows]
@@ -188,9 +203,7 @@ def main():
             ts = time.time()
             folds_saved = sorted(store.dirty)
             progress.save(store, records)
-            run["saves"].append({"after_prompts": len(records), "folds": folds_saved, "seconds": round(time.time() - ts, 1),
-                                 "bytes": 7 * len(folds_saved) * sum(4 * x.numel() for x in ctx.params),
-                                 "mem_available_gb": mem_available_gb(), "peak_rss_gb": peak_rss_gb()})
+            record_save(folds_saved, ts)
         if stop_after and n + 1 == stop_after:
             run.update(stopped_after=stop_after, peak_gpu_gb=torch.cuda.max_memory_allocated() / 1e9, peak_rss_gb=peak_rss_gb())
             with open(out / "runs.jsonl", "a") as f:
@@ -203,7 +216,7 @@ def main():
     tmp = out / "GRAM.json.tmp"
     tmp.write_text(json.dumps(data))
     run["gram_seconds"] = round(time.time() - ts, 1)
-    run["vectors_allocated"] = len(store.vec)
+    run["vectors_allocated"] = len(set(store.vec) | set(store.files))
     with open(out / "ANSWER_POS.jsonl", "w") as fa, open(out / "TRAJ.jsonl", "w") as ft:
         for rec in sorted(records, key=lambda r: r["prompt"]):
             for t in rec["trajectories"]:
