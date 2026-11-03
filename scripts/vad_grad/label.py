@@ -11,6 +11,7 @@ sends only the rule misses to the Mistral judge (temperature 0). The inputs are 
   incorrect (source noncanonical_as_incorrect), with no retry. The raw output stays in judge_raw.
 Usage: python label.py <repo root> <mapped A1 COMMAND.txt> <out dir> <judge api base> <name>=<rollouts.jsonl> [...]
 Writes <out dir>/<name>/LABELS.jsonl (traj, label, source, judge_raw, rule_label) and <out dir>/LABELS_SUMMARY.json.
+LABELS_SUMMARY.json also counts the permissive labels (permissive.py, DT reading tool) for the POST_RUN agreement table.
 """
 
 from __future__ import annotations
@@ -23,8 +24,10 @@ from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "vad_rollout" / "a8"))
 import trainer_io  # noqa: E402
+from permissive import permissive_label  # noqa: E402
 
 RULE_SOURCES = ("rule", "first letter", "yes/no")
 ERROR = "[JUDGE_API_ERROR]"
@@ -120,11 +123,15 @@ def main():
         judged = {r["traj"]: r["label"] for r in recs}
         strict = {r["traj"]: r["rule_label"] for r in recs}
         agree = Counter((strict[t], judged[t]) for t in judged)
+        permissive = {r["traj"]: permissive_label(r["response_text"], r["gt"]) for r in rows}
+        joint = Counter((strict[t], judged[t], permissive[t]) for t in judged)
         summary["checkpoints"][name] = {
             "rollouts": rollouts, "rollouts_sha256": sha256(rollouts), "labels_sha256": sha256(path),
             "trajectories": len(recs), "counts": counts, "seconds": round(time.time() - start, 1),
-            "correct": {"judge_based": sum(v or 0 for v in judged.values()), "strict_rule_only": sum(strict.values())},
+            "correct": {"judge_based": sum(v or 0 for v in judged.values()), "strict_rule_only": sum(strict.values()),
+                        "permissive": sum(permissive.values())},
             "strict_vs_judge": {f"{a}->{b}": n for (a, b), n in sorted(agree.items(), key=str)},
+            "strict_judge_permissive": {f"{a},{b},{c}": n for (a, b, c), n in sorted(joint.items(), key=str)},
             "prompt_classes": prompt_classes(rows, judged),
         }
         if counts.get("transport_error"):
