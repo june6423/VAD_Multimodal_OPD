@@ -105,6 +105,13 @@ def peak_rss_gb() -> float:
     return float("nan")
 
 
+def rss_now_gb() -> dict:
+    """RssAnon and RssFile now. VmHWM (peak_rss_gb) counts both, and the pages of a mapped saved vector are RssFile."""
+    v = {line.split(":")[0]: int(line.split()[1]) * 1024 / 1e9 for line in open("/proc/self/status")
+         if line.startswith(("RssAnon:", "RssFile:"))}
+    return {"rss_anon_gb": v.get("RssAnon", float("nan")), "rss_file_gb": v.get("RssFile", float("nan"))}
+
+
 def mem_available_gb() -> float:
     for line in open("/proc/meminfo"):
         if line.startswith("MemAvailable:"):
@@ -158,7 +165,7 @@ def main():
     def record_save(folds_saved: list[int], ts: float):
         run["saves"].append({"after_prompts": len(records), "folds": folds_saved, "seconds": round(time.time() - ts, 1),
                              "bytes": 7 * len(folds_saved) * sum(4 * x.numel() for x in ctx.params),
-                             "mem_available_gb": mem_available_gb(), "peak_rss_gb": peak_rss_gb()})
+                             "mem_available_gb": mem_available_gb(), "peak_rss_gb": peak_rss_gb(), **rss_now_gb()})
 
     fold = None
     for n, p in enumerate(todo):
@@ -229,7 +236,7 @@ def main():
     progress.remove_vectors()
     run.update(end=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), prompts_done=len(records),
                trajectories=sum(len(r["trajs"]) for r in records), peak_gpu_gb=torch.cuda.max_memory_allocated() / 1e9,
-               peak_rss_gb=peak_rss_gb(), mem_available_gb_end=mem_available_gb())
+               peak_rss_gb=peak_rss_gb(), **rss_now_gb(), mem_available_gb_end=mem_available_gb())
     with open(out / "runs.jsonl", "a") as f:
         f.write(json.dumps(run) + "\n")
     print(f"{name}: GRAM.json written, {len(records)} prompts")

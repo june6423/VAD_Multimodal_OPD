@@ -31,6 +31,17 @@ log="$out/RUN_GRAD.txt"
 "$py" scripts/vad_grad/map_command.py "$data/rollout001/TASK-VLM-VAD-ROLLOUT-001-022/COMMAND.txt" "$out/COMMAND_B200.txt" \
   "$root" "$b200/harness" >> "$log" 2>&1 || exit 1
 
+# Memory of the run cgroup and of the nearest ancestor cgroup with a limit (DIRECTIVE-VLM-VAD-GRAD-001-004 Decision 2).
+memlog() {
+  local cg up
+  cg="/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)"
+  up="$cg"
+  while [[ "$up" != /sys/fs/cgroup && "$(cat "$up/memory.max" 2>/dev/null)" == max ]]; do up="$(dirname "$up")"; done
+  echo "$1 memory run $cg peak $(cat "$cg/memory.peak") $(grep -E '^(anon|file) ' "$cg/memory.stat" | tr '\n' ' ')" \
+    "$(tr '\n' ' ' < "$cg/memory.events")| limit $up max $(cat "$up/memory.max") peak $(cat "$up/memory.peak")" \
+    "$(grep -E '^(max|oom_kill) ' "$up/memory.events" | tr '\n' ' ')"
+}
+
 model_of() { case "$1" in step0) echo "$data/models/Qwen3.5-4B" ;; step80) echo "$merged/step_80" ;; step130) echo "$merged/step_130" ;; esac; }
 adam_of() { case "$1" in step130) echo "$adam_root/V_A1_130.safetensors" ;; *) echo "$adam_root/V_A1_80.safetensors" ;; esac; }
 
@@ -55,6 +66,7 @@ for ck in step0 step80 step130; do
   echo "$ck moments exit $code at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
   [[ $code -eq 0 ]] || exit 1
   echo "$ck accumulator files left: $(find "$dir" -name '*.safetensors' | wc -l)" >> "$log"
+  memlog "$ck" >> "$log" 2>&1
 done
 
 trials=$([[ "$pilot" == 1 ]] && echo 2 || echo 16)
@@ -69,4 +81,5 @@ done
 if [[ "$pilot" == 1 ]]; then
   "$py" scripts/vad_grad/pilot.py project "$out" "$r053" "$labels_root" "$r056" "$out/PROJECTION.json" >> "$log" 2>&1 || exit 1
 fi
+memlog end >> "$log" 2>&1
 echo "== done $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"

@@ -11,6 +11,7 @@ Usage: python crosscheck.py <repo> <mapped COMMAND.txt> <model dir> <rollouts> <
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import sys
@@ -24,7 +25,11 @@ import accum  # noqa: E402
 import moments  # noqa: E402
 import params as gparams  # noqa: E402
 import provenance  # noqa: E402
-import stats  # noqa: E402
+
+# moments puts scripts/vad_rollout/a8 first on sys.path, and a8/grads.py loads the A8 stats.py as "stats".
+_spec = importlib.util.spec_from_file_location("grad_stats", Path(__file__).resolve().parent / "stats.py")
+stats = sys.modules["grad_stats"] = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(stats)
 
 a8_stats = moments.a8.stats
 TRIAL_SEED = 20261103
