@@ -55,6 +55,15 @@ def test_cross_fold_within_3_se(drawn, metric):
         assert within(cross[key], value), (key, cross[key]["value"], cross[key]["se"], value)
 
 
+def test_alignment_sign_follows_the_step_direction(drawn):
+    """HANDOFF-VLM-VAD-GRAD-001-R2 Correction item 1: a_X = <-mu_X, g_acc> / norms. The truth has cos(mu_C, nu) = 0.5
+    and cos(mu_I, nu) = -0.2, so a step on C (along -mu_C) lowers the accuracy (a_C < 0) and a step on I raises it."""
+    _, _, out = drawn
+    cross = out["metrics"]["raw"]["cross_fold"]
+    assert cross["a|C"]["value"] < -3 * cross["a|C"]["se"]
+    assert cross["a|I"]["value"] > 3 * cross["a|I"]["se"]
+
+
 def test_folds_are_disjoint_and_cover_all_prompts():
     folds = accum.fold_of(list(range(375)))
     assert sorted(folds) == list(range(375))

@@ -3,7 +3,7 @@
 g_i = mu_class(i) + b_p + w_i with b_p ~ N(0, s_b^2 I) shared by the siblings of prompt p and w_i ~ N(0, s_w^2 I).
 Per class: m = ||mu||^2, sigma_b^2 = d s_b^2, sigma_w^2 = d s_w^2, E2 = m + sigma_b^2 + sigma_w^2. Defaults: class C
 m = 1, q = 0.01, ICC 0.8; class I m = 3. The log-probability gradient is h_i = r_i nu + e_i, so the prompt-centered sum
-sum_i (r_i - mean r) h_i has the direction nu, and a_X = cos(mu_X, nu). Flags are random and independent of the rest,
+sum_i (r_i - mean r) h_i has the direction nu, and a_X = cos(-mu_X, nu) (R2 sign: -mu_X is the step direction). Flags are random and independent of the rest,
 so a class x flag subset has the truth of its class. D is a random positive diagonal; the truth in the D metric uses
 mu^T D mu and tr(D). The vectors go through accum.finish_prompt and accum.gram_file, as in moments.py.
 """
@@ -59,7 +59,7 @@ def true_cross(truth: dict, metric: str) -> dict:
     def cos(a, b):
         return float(a @ (w * b)) / math.sqrt(float(a @ (w * a)) * float(b @ (w * b)))
 
-    return {"cos_mu_C_mu_I|pooled": cos(mu_c, mu_i), "a|C": cos(mu_c, nu), "a|I": cos(mu_i, nu)}
+    return {"cos_mu_C_mu_I|pooled": cos(mu_c, mu_i), "a|C": cos(-mu_c, nu), "a|I": cos(-mu_i, nu)}
 
 
 def split(v: torch.Tensor) -> list[torch.Tensor]:

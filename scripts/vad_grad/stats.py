@@ -14,7 +14,8 @@ Pair cosines inside mixed prompts: cc, ii, ci for the pooled and each flag view.
   mean pair cosine of the prompt (A8 method); "weighted" = sum of pair dots / sum of ||g_i|| ||g_j|| (option a).
 Cross-fold quantities use only pairs of different folds: <mu_X, mu_Y> = sum_{a != b} <S_X(a), S_Y(b)> /
   sum_{a != b} N_X(a) N_Y(b), the same for g_acc with A(b) and the prompt count of fold b.
-  mu2_cf, cos(mu_C, mu_I), gacc2_cf, a_X = <mu_X, g_acc> / sqrt(mu2_cf(X) gacc2_cf).
+  mu2_cf, cos(mu_C, mu_I), gacc2_cf, a_X = <-mu_X, g_acc> / sqrt(mu2_cf(X) gacc2_cf) (HANDOFF-VLM-VAD-GRAD-001-R2
+  Correction item 1: -mu_X is the step direction, so a_X > 0 means that a step on X raises the expected accuracy).
 Standard errors: the value uses all folds. One-fold quantities: sd(Q_1..Q_4) / 2 with Q_a from fold a only (sample
   sd), and also the delete-one-fold jackknife. Cross-fold quantities: the jackknife sqrt(3/4 sum_a (T_a - Tbar)^2),
   where T_a uses the other 3 folds.
@@ -195,7 +196,7 @@ def cross_fold(gr: Gram, metric: str, folds: list[int]) -> dict:
     for name, sel in sets.items():
         mu2[name] = inner(sel, sel)
         out[f"mu2_cf|{name}"] = mu2[name]
-        out[f"a|{name}"] = _div(inner_acc(sel), _sqrt(mu2[name] * gacc2))
+        out[f"a|{name}"] = _div(-inner_acc(sel), _sqrt(mu2[name] * gacc2))  # R2: <-mu_X, g_acc>
     for view in ("pooled",) + FLAGS:
         c_key = "C" if view == "pooled" else f"C|{view}"
         i_key = "I" if view == "pooled" else f"I|{view}"
