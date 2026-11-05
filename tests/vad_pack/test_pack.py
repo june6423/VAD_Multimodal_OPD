@@ -123,11 +123,17 @@ def split_rows(batch: str, micro_sizes: list[int], start: int = 0) -> list[dict]
     return rows
 
 
+def rollout_lp(t: int, n: int) -> list[float]:
+    """Synthetic TASK-053 rollout_logprobs of trajectory t with n response tokens."""
+    return [-0.1 * (k + 1) - 0.01 * t for k in range(n)]
+
+
 def run(ctx, out: Path, rows: list[dict], **opts):
     out.mkdir(parents=True, exist_ok=True)
     o = {"pilot": None, "one_row_check": False, "stop_after": 0, "commit_seconds": 1e9, **opts}
-    return pack.run_batch(ctx, rows[0]["batch"], rows, {r["traj"]: {"traj": r["traj"]} for r in rows}, out, o,
-                          {"micro": 0})
+    rollouts = {r["traj"]: {"traj": r["traj"], "rollout_logprobs": rollout_lp(
+        r["traj"], int(ctx.data[r["traj"]]["response_mask"].sum()))} for r in rows}
+    return pack.run_batch(ctx, rows[0]["batch"], rows, rollouts, out, o, {"micro": 0})
 
 
 def objectives(actor):
@@ -175,6 +181,46 @@ def test_arm_p_equals_arm_u_for_one_row(setup, tmp_path):
     r1, r2 = records(out2, "A1-S0-1")
     assert r1["L_P"] == pytest.approx(r1["L_U"], rel=1e-6) and r1["d_max"] < 1e-5
     assert abs(r2["L_P"] - r2["L_U"]) > 1e-3 and r2["kl_student_sum"] > 1e-4
+
+
+def test_rollout_differences_equal_a_direct_computation(setup, tmp_path):
+    """R3 Part A item 3: rdiff_X = rollout_logprobs - the student log-probability of arm X at each response token, and
+    rkl_X_sum / kl_tokens equals the A1 rollout_corr/kl (compute_rollout_corr_metrics_from_logprobs) of the row."""
+    from verl.trainer.ppo.rollout_corr_helper import compute_rollout_corr_metrics_from_logprobs
+
+    actor, data = setup
+    ctx = ToyCtx(actor, data)
+    run(ctx, tmp_path, split_rows("A1-S0-1", [3]))
+    members = [0, 1, 2]
+    mi = {k: (torch.cat([data[t][k] for t in members]) if torch.is_tensor(data[0][k]) else None) for k in data[0]}
+    with torch.no_grad():
+        lp_packed = actor._forward_micro_batch(mi, temperature=1.0)["log_probs"]
+    for j, rec in enumerate(records(tmp_path, "A1-S0-1")):
+        t = rec["traj"]
+        mask = data[t]["response_mask"]
+        n = int(mask.sum())
+        with torch.no_grad():
+            lp_row = actor._forward_micro_batch(data[t], temperature=1.0)["log_probs"]
+        rl = torch.tensor(rollout_lp(t, n), dtype=torch.float64)
+        for arm, lp in (("P", lp_packed[j:j + 1]), ("U", lp_row)):
+            want = rl - lp[0, :n].double()
+            assert len(rec[f"rdiff_{arm}"]) == n == rec["kl_tokens"]
+            assert np.allclose(rec[f"rdiff_{arm}"], want.numpy(), rtol=1e-5, atol=1e-7)
+            assert rec[f"rkl_{arm}_sum"] == pytest.approx(float(want.sum()), rel=1e-6, abs=1e-7)
+            rollout_full = torch.zeros_like(lp)
+            rollout_full[0, :n] = rl.float()
+            a1 = compute_rollout_corr_metrics_from_logprobs(log_prob=lp, rollout_log_prob=rollout_full,
+                                                            response_mask=mask)["rollout_corr/kl"]
+            assert rec[f"rkl_{arm}_sum"] / rec["kl_tokens"] == pytest.approx(a1, rel=1e-5, abs=1e-7)
+        if rec["position"] == 1:
+            assert rec["rdiff_P"] == rec["rdiff_U"]
+        else:  # the toy state term of the packed forward reaches the rollout record
+            assert abs(rec["rkl_P_sum"] - rec["rkl_U_sum"]) > 1e-3
+
+
+def test_rollout_diff_rejects_a_length_mismatch():
+    with pytest.raises(RuntimeError):
+        pack.rollout_diff(torch.zeros(1, 4), [-0.1, -0.2], torch.tensor([[1.0, 1.0, 1.0, 0.0]]))
 
 
 def test_gradients_follow_the_a1_aggregation(setup, tmp_path):
@@ -320,7 +366,8 @@ def test_statistics_by_hand(tmp_path):
                 rows.append({"batch": b, "rank": 0, "mini": 0, "micro": u, "position": pos, "response_tokens": 2 * pos,
                              "traj": len(rows), "d_abs": [0.0, 0.0] if pos == 1 else [scale, 2 * scale],
                              "kl_student_sum": 0.0 if pos == 1 else 3 * scale, "kl_teacher_sum": 0.0 if pos == 1 else scale,
-                             "kl_tokens": 2, "L_P": -10.0 if pos == 1 else -10.0 - scale, "L_U": -10.0})
+                             "kl_tokens": 2, "L_P": -10.0 if pos == 1 else -10.0 - scale, "L_U": -10.0,
+                             "rkl_U_sum": 0.2, "rkl_P_sum": 0.2 if pos == 1 else 0.2 + scale})
     for b in ("A1-S0-1", "A1-S0-2", "A1-S0-3"):
         with open(tmp_path / f"PACKROWS_{b}.jsonl", "w") as f:
             for r in rows:
@@ -343,6 +390,12 @@ def test_statistics_by_hand(tmp_path):
     assert te["2+"]["d_abs_p99"]["value"] == pytest.approx(np.percentile(pooled, 99))
     assert te["2+"]["kl_student_mean"]["value"] == pytest.approx(3 * 2 * 2 * 6 / 2 / 12)  # sum 3s x 2 micro / tokens
     assert te["2+"]["L_rel_diff_mean"]["value"] == pytest.approx(np.mean([s / 10 for s in (1, 2, 3)]))
+    rk = grp["rollout_kl"]  # R3 item 6.7: sum of rkl over sum of tokens
+    assert rk["1"]["U"]["value"] == pytest.approx(0.1) and rk["1"]["P"]["value"] == pytest.approx(0.1)
+    assert rk["2+"]["U"]["value"] == pytest.approx(0.1)
+    assert rk["2+"]["P"]["value"] == pytest.approx((6 * 0.2 + 2 * (1 + 2 + 3)) / 12)
+    assert rk["all"]["P"]["value"] == pytest.approx((12 * 0.2 + 2 * (1 + 2 + 3)) / 24)
+    assert rk["all"]["P"]["count"] == 24 and rk["all"]["P"]["micro_batches"] == 6
     gr = res["gradients"]
     v = {n: vec[i] for i, n in enumerate(names)}
     for k in (1, 2, 3):

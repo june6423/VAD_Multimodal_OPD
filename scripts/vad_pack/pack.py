@@ -18,7 +18,8 @@ Gradient g_X(b) (Definition 8): the mean over the ranks (FSDP gradient averaging
 Row values (Definition 12): L = sum of the student response log-probabilities; d_t = logp_P - logp_U (student);
   KL_t = KL(U || P) over the full vocabulary from the response logits of the student and of the x-plus teacher forwards
   (the teacher of A1, the "teacher_*" view); O4 of each arm for the row (arm P: the O4 code on the row slice of the
-  packed outputs).
+  packed outputs); rdiff_P and rdiff_U = rollout_logprobs (TASK-053) - the student log-probability of the arm at each
+  response token, and their sums rkl_P_sum and rkl_U_sum (R3 Part A item 3, the rollout_corr/kl integrand).
 Progress: progress_<batch>.json after each micro-batch. The accumulators are saved (vectors/partial_<batch>_<arm>.pt)
   with the list of the micro-batches in them at most every COMMIT_SECONDS, at a forced stop and at the batch end. A
   restart loads them and skips those micro-batches; it computes the other micro-batches again.
@@ -123,18 +124,34 @@ def kl_sum(logits_u, logits_p, mask) -> float:
     return float((lu.exp() * (lu - lp)).sum())
 
 
-def row_values(sP: dict, plusP: dict, i: int, sU: dict, plusU: dict, mask) -> dict:
-    """L_P, L_U, |d_t| and the KL sums of row i (mask: the response mask of the row, shape (1, R))."""
+def rollout_diff(log_probs, rollout_lp: list[float], mask):
+    """rollout_lp - log_probs at the response tokens of one row (fp64): the rollout_corr/kl integrand
+    (rollout_corr_helper.py 889, log_prob of the training forward, dp_actor.py 1795-1806). rollout_lp: the TASK-053
+    rollout_logprobs of the row, one value for each response token."""
+    import torch
+
+    idx = mask[0].nonzero().squeeze(-1)
+    if len(rollout_lp) != idx.numel():
+        raise RuntimeError(f"{len(rollout_lp)} rollout log-probabilities for {idx.numel()} response tokens")
+    return torch.tensor(rollout_lp, dtype=torch.float64) - log_probs[0, idx].detach().double().cpu()
+
+
+def row_values(sP: dict, plusP: dict, i: int, sU: dict, plusU: dict, mask, rollout_lp: list[float]) -> dict:
+    """L_P, L_U, |d_t|, the KL sums and the rollout differences of each arm of row i (mask: the response mask of the
+    row, shape (1, R))."""
     lp_p = sP["log_probs"][i:i + 1].detach().float()
     lp_u = sU["log_probs"].detach().float()
     m = mask.float()
     d = ((lp_p - lp_u) * m)[0][mask[0].bool()].abs()
+    r_p, r_u = rollout_diff(lp_p, rollout_lp, mask), rollout_diff(lp_u, rollout_lp, mask)
     return {"L_P": float((lp_p * m).sum()), "L_U": float((lp_u * m).sum()),
             "d_abs": [float(f"{x:.6g}") for x in d.tolist()],
             "d_mean": float(d.mean()) if d.numel() else 0.0, "d_max": float(d.max()) if d.numel() else 0.0,
             "kl_student_sum": kl_sum(sU["response_logits"], sP["response_logits"][i:i + 1], mask),
             "kl_teacher_sum": kl_sum(plusU["response_logits"], plusP["response_logits"][i:i + 1], mask),
-            "kl_tokens": int(mask.sum())}
+            "kl_tokens": int(mask.sum()),
+            "rdiff_P": [float(f"{x:.6g}") for x in r_p.tolist()], "rdiff_U": [float(f"{x:.6g}") for x in r_u.tolist()],
+            "rkl_P_sum": float(r_p.sum()), "rkl_U_sum": float(r_u.sum())}
 
 
 def shared_digest(mi: dict) -> dict:
@@ -272,7 +289,8 @@ def run_batch(ctx, batch: str, split_rows: list[dict], rollouts: dict, out: Path
             acc.add("U", grads, 1.0 / ranks)
             del grads
             with torch.no_grad():
-                vals = row_values(sP, plusP, i, sU, plusU, rows_mi[i]["response_mask"])
+                vals = row_values(sP, plusP, i, sU, plusU, rows_mi[i]["response_mask"],
+                                  rollouts[r["traj"]]["rollout_logprobs"])
             rec = {**{k: r[k] for k in ("batch", "arm", "set", "rank", "mini", "micro", "position", "micro_rows",
                                         "traj", "prompt", "sibling", "label", "total_tokens", "response_tokens")},
                    "loss_tokens": float(t_rows[i]), "weight_P": scale, "weight_U": w,

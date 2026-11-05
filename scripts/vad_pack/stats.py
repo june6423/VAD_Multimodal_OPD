@@ -1,4 +1,4 @@
-"""Statistics of the packed-forward comparison (HANDOFF-VLM-VAD-PACK-001-R1 Part A item 6, Definitions 9 to 13).
+"""Statistics of the packed-forward comparison (HANDOFF-VLM-VAD-PACK-001-R3 Part A item 6, Definitions 9 to 13).
 
 Reads only PACKROWS_<batch>.jsonl and GRAM_PACK.json of one directory. Writes STATS_PACK.json.
 Group: the batch name without its index (A1-S0, A1-S80, A2-S0). Position class: "1" (position 1) and "2+" (position 2
@@ -130,6 +130,20 @@ def token_errors(micro: dict, resamples: int) -> dict:
     return out
 
 
+def rollout_kl(micro: dict, resamples: int) -> dict:
+    """Item 6.7 (R3): rollout_corr/kl of each arm, the A1 formula masked_mean(rollout_log_prob - log_prob,
+    response_mask) (rollout_corr_helper.py 889) over the pooled response tokens of the group, for each position class
+    and for all rows ("all", the micro-batches as A1 had them). Descriptive."""
+    out = {}
+    per = list(micro.values())
+    for c in (*CLASSES, "all"):
+        sel = [[r for r in rs if c == "all" or cls(r) == c] for rs in per]
+        sel = [rs for rs in sel if rs]
+        out[c] = {arm: ratio([sum(r[f"rkl_{arm}_sum"] for r in rs) for rs in sel],
+                             [sum(r["kl_tokens"] for r in rs) for rs in sel], resamples) for arm in "PU"}
+    return out
+
+
 def gradients(gram: dict) -> dict:
     """Items 6.4 to 6.6 from the Gram matrix."""
     names = gram["names"]
@@ -186,7 +200,8 @@ def compute(d: Path, resamples: int) -> dict:
     out = {"resamples": resamples, "seed": SEED, "batches": {b: len(rs) for b, rs in rows.items()}, "groups": {}}
     for grp, rs in sorted(groups.items()):
         micro = by_micro(rs)
-        out["groups"][grp] = {"packing": packing(micro, resamples), "token_errors": token_errors(micro, resamples)}
+        out["groups"][grp] = {"packing": packing(micro, resamples), "token_errors": token_errors(micro, resamples),
+                              "rollout_kl": rollout_kl(micro, resamples)}
     gram = json.loads((d / "GRAM_PACK.json").read_text())
     out["gradients"] = gradients(gram)
     return out
