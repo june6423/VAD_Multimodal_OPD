@@ -45,7 +45,8 @@ class Stop(Exception):
 
 def option_letters(raw_prompt) -> list[str]:
     """Sorted option letters of the prompt text (lines that start with 'A.', 'B)', '(C)' and so on)."""
-    text = "\n".join(m["content"] if isinstance(m["content"], str) else json.dumps(m["content"]) for m in raw_prompt)
+    text = "\n".join(m["content"] if isinstance(m["content"], str)
+                     else "\n".join(c["text"] for c in m["content"] if c.get("type") == "text") for m in raw_prompt)
     return sorted(set(OPTION.findall(text)))
 
 

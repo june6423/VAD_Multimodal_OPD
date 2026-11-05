@@ -80,6 +80,13 @@ def test_option_letters():
     assert score.option_letters(prompt) == ["A", "B", "C", "D"]
 
 
+def test_option_letters_content_list():
+    """RLHFDataset._build_messages gives the user content as a list of image and text parts (pilot TASK-002/003)."""
+    prompt = [{"role": "user", "content": [{"type": "image", "image": "img"},
+                                           {"type": "text", "text": "\nQ?\n\nA. concrete\nB. sand\nC. metal\nD. water\n"}]}]
+    assert score.option_letters(prompt) == ["A", "B", "C", "D"]
+
+
 def test_d_per_prompt_by_hand():
     meta = {0: (0, 1, 3), 1: (0, 1, 20), 2: (0, 0, 2), 3: (1, 1, 2), 4: (1, 0, 9), 5: (1, 0, 2), 6: (2, 1, 1), 7: (2, 1, 1)}
     meta = {t: {"prompt": p, "label": lab, "response_tokens": n} for t, (p, lab, n) in meta.items()}
