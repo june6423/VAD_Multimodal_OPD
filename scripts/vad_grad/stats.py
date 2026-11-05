@@ -16,6 +16,9 @@ Cross-fold quantities use only pairs of different folds: <mu_X, mu_Y> = sum_{a !
   sum_{a != b} N_X(a) N_Y(b), the same for g_acc with A(b) and the prompt count of fold b.
   mu2_cf, cos(mu_C, mu_I), gacc2_cf, a_X = <-mu_X, g_acc> / sqrt(mu2_cf(X) gacc2_cf) (HANDOFF-VLM-VAD-GRAD-001-R2
   Correction item 1: -mu_X is the step direction, so a_X > 0 means that a step on X raises the expected accuracy).
+  R3 (HANDOFF-VLM-VAD-GRAD-001-R3 Part A items 6.8, 12): the numerator n_X = <-mu_X, g_acc> for each subset; each
+  squared-norm estimate goes through its own square root (a negative one gives NaN); a pair cosine with a zero
+  gradient norm is NaN.
 Standard errors: the value uses all folds. One-fold quantities: sd(Q_1..Q_4) / 2 with Q_a from fold a only (sample
   sd), and also the delete-one-fold jackknife. Cross-fold quantities: the jackknife sqrt(3/4 sum_a (T_a - Tbar)^2),
   where T_a uses the other 3 folds.
@@ -144,7 +147,7 @@ def pair_cosines(gr: Gram, metric: str, view, folds: list[int]) -> dict:
         for key, plist in pairs.items():
             if not plist:
                 continue
-            cos = [m[i][j] / math.sqrt(m[i][i] * m[j][j]) for i, j in plist]
+            cos = [_div(m[i][j], math.sqrt(m[i][i] * m[j][j])) for i, j in plist]  # R3 item 12.3: zero norm -> NaN
             acc[key]["prompt_means"].append(sum(cos) / len(cos))
             acc[key]["dot"] += sum(m[i][j] for i, j in plist)
             acc[key]["normprod"] += sum(math.sqrt(m[i][i] * m[j][j]) for i, j in plist)
@@ -196,11 +199,12 @@ def cross_fold(gr: Gram, metric: str, folds: list[int]) -> dict:
     for name, sel in sets.items():
         mu2[name] = inner(sel, sel)
         out[f"mu2_cf|{name}"] = mu2[name]
-        out[f"a|{name}"] = _div(-inner_acc(sel), _sqrt(mu2[name] * gacc2))  # R2: <-mu_X, g_acc>
+        out[f"n|{name}"] = -inner_acc(sel)  # R3 item 6.8: n_X = <-mu_X, g_acc>, no square root
+        out[f"a|{name}"] = _div(out[f"n|{name}"], _sqrt(mu2[name]) * _sqrt(gacc2))  # R3 item 12.2
     for view in ("pooled",) + FLAGS:
         c_key = "C" if view == "pooled" else f"C|{view}"
         i_key = "I" if view == "pooled" else f"I|{view}"
-        out[f"cos_mu_C_mu_I|{view}"] = _div(inner(sets[c_key], sets[i_key]), _sqrt(mu2[c_key] * mu2[i_key]))
+        out[f"cos_mu_C_mu_I|{view}"] = _div(inner(sets[c_key], sets[i_key]), _sqrt(mu2[c_key]) * _sqrt(mu2[i_key]))
     return out
 
 

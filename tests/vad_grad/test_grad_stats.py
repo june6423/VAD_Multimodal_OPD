@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -114,6 +115,64 @@ def test_gram12_equals_vectors_summed_first():
     for u, nu in enumerate(names12):
         for v, nv in enumerate(names12):
             assert g12[u][v] == pytest.approx(accum.dot(summed[nu], summed[nv], d), rel=1e-10, abs=1e-12)
+
+
+def _store_gram(vectors: dict, shapes, d, counts: dict | None = None) -> dict:
+    """A Gram file from given accumulator vectors (zero vectors for the other names), count 1 by default."""
+    store = accum.Store(shapes)
+    for name in accum.vector_names():
+        store.add(name, vectors.get(name, [torch.zeros(s) for s in shapes]), (counts or {}).get(name, 1))
+    return accum.gram_file(store, d, "cpu", [], "t")
+
+
+@pytest.mark.parametrize("metric", ["raw", "D"])
+def test_numerator_n_x_equals_direct_computation(metric):
+    """HANDOFF-VLM-VAD-GRAD-001-R3 Part A items 6.8, 12.1: n_X = -sum_{a != b} <S_X(a), A(b)> / sum_{a != b} N_X(a) N_A(b)."""
+    torch.manual_seed(3)
+    shapes = [torch.Size([4, 2]), torch.Size([5])]
+    d = [torch.rand(s) + 0.5 for s in shapes]
+    vectors = {name: [torch.randn(s) for s in shapes] for name in accum.vector_names()}
+    counts = {name: 1 + i % 5 for i, name in enumerate(accum.vector_names())}
+    data = _store_gram(vectors, shapes, d, counts)
+    out = stats.cross_fold(stats.Gram(data), metric, list(range(4)))
+    dm = d if metric == "D" else None
+    for name, sel in stats.subsets().items():
+        num = den = 0.0
+        for a in range(4):
+            names_a = [f"S|{a}|{c}|{f}" for c in stats.CLASSES for f in stats.FLAGS if sel(c, f)]
+            s_a = [sum(vectors[n][t].double() for n in names_a) for t in range(len(shapes))]
+            for b in range(4):
+                if a != b:
+                    num += accum.dot(s_a, [x.double() for x in vectors[f"A|{b}"]], dm)
+                    den += sum(counts[n] for n in names_a) * counts[f"A|{b}"]
+        assert out[f"n|{name}"] == pytest.approx(-num / den, rel=1e-9), name
+
+
+def test_two_negative_squared_norms_give_nan():
+    """R3 Part A item 12.2: each square root separately. Folds 0 and 1 hold u and -u, so gacc2_cf, mu2_cf|C and
+    mu2_cf|I are negative; their products are positive, and the R2 code gave finite a|C and cos(mu_C, mu_I)."""
+    shapes = [torch.Size([3])]
+    d = [torch.ones(3)]
+    u = [torch.tensor([1.0, 2.0, 0.5])]
+    neg = [-x for x in u]
+    vectors = {"A|0": u, "A|1": neg, "S|0|C|f1": u, "S|1|C|f1": neg, "S|0|I|f1": u, "S|1|I|f1": neg}
+    out = stats.cross_fold(stats.Gram(_store_gram(vectors, shapes, d)), "raw", list(range(4)))
+    assert out["gacc2_cf"] < 0 and out["mu2_cf|C"] < 0 and out["mu2_cf|I"] < 0
+    for key in ("a|C", "a|I", "a|f1", "a|C|f1", "a|I|f1", "cos_mu_C_mu_I|pooled", "cos_mu_C_mu_I|f1"):
+        assert math.isnan(out[key]), (key, out[key])
+    assert out["n|C"] != 0 and out["n|I"] != 0  # the numerator has no square root
+
+
+def test_zero_gradient_norm_pair_gives_nan():
+    """R3 Part A item 12.3: a pair with a zero gradient norm gives NaN, not a division by zero."""
+    m = [[0.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.5, 0.1], [0.0, 0.5, 3.0, 0.2], [0.0, 0.1, 0.2, 1.0]]
+    prompt = {"prompt": 0, "fold": 0, "trajs": [0, 1, 2, 3], "labels": [1, 1, 0, 0], "flags": ["f1"] * 4, "raw": m, "D": m}
+    names = accum.vector_names()
+    zeros = [[0.0] * len(names) for _ in names]
+    data = {"k": 4, "names": names, "counts": {n: 0 for n in names}, "raw": zeros, "D": zeros, "prompts": [prompt]}
+    out = stats.pair_cosines(stats.Gram(data), "raw", stats.subsets()["pooled"], [0])
+    assert math.isnan(out["cc_exact"]) and math.isnan(out["ci_exact"])
+    assert out["ii_exact"] == pytest.approx(0.2 / (3.0 ** 0.5))
 
 
 def test_resume_gives_the_same_accumulators(tmp_path):
