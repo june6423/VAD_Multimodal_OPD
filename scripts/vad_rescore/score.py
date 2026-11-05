@@ -15,7 +15,11 @@ each prompt (a restart skips the completed prompts), runs_<model>.jsonl.
 
 Usage: python score.py <repo root> <COMMAND_B200.txt> <model dir> <model name> <out dir> <set spec> [<set spec> ...]
   set spec: <set name>=<rollouts.jsonl>=<LABELS.jsonl>=<ANSWER_POS.jsonl>[=<prompt list json>]
-Env: BATCH (8), STOP_AFTER_PROMPTS (0 = no forced stop; the pilot stops once to test the resume, exit 75).
+Env: BATCH (1), STOP_AFTER_PROMPTS (0 = no forced stop; the pilot stops once to test the resume, exit 75).
+BATCH must stay 1 for Qwen3.5: with use_remove_padding the rows of a micro-batch are packed into one sequence, and the
+linear-attention layers (Qwen3_5GatedDeltaNet: causal_conv1d_fn with seq_idx=None, chunk_gated_delta_rule without
+cu_seqlens) carry their state over the row boundaries. Rows after the first then get wrong log-probabilities
+(pilot TASK-VLM-VAD-GRAD-002-002: BATCH 8, only sibling 0 of each prompt equals logp_sum of TRAJ.jsonl).
 """
 
 from __future__ import annotations
@@ -164,7 +168,7 @@ def main():
     specs = [s.split("=") for s in sys.argv[6:]]
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    batch = int(os.environ.get("BATCH", "8"))
+    batch = int(os.environ.get("BATCH", "1"))
     stop_after = int(os.environ.get("STOP_AFTER_PROMPTS", "0"))
     run = {"model": model_name, "model_dir": model_dir, "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
            "batch": batch, "stop_after": stop_after, "verl": provenance.verl_origin(repo), "sets": [], "oom_fallback": []}
