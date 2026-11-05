@@ -213,6 +213,8 @@ def run_batch(ctx, batch: str, split_rows: list[dict], rollouts: dict, out: Path
     for r in split_rows:
         micro.setdefault(micro_key(r), []).append(r)
     keys = [k for k in micro if opts["pilot"] is None or [batch, *k] in opts["pilot"]]
+    if not keys:
+        return {"batch": batch, "skipped": "no selected micro-batch"}
     acc = Accum(ctx.params, ctx.device)
     prog_path = out / f"progress_{batch}.json"
     progress = json.loads(prog_path.read_text()) if prog_path.exists() else {"rows": [], "micro": [], "committed": []}

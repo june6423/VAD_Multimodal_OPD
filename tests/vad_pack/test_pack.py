@@ -111,9 +111,9 @@ def setup():
     return actor, data
 
 
-def split_rows(batch: str, micro_sizes: list[int]) -> list[dict]:
-    """Split rows of one batch: micro-batches of the given sizes on rank 0, trajectories 0, 1, 2, ..."""
-    rows, t = [], 0
+def split_rows(batch: str, micro_sizes: list[int], start: int = 0) -> list[dict]:
+    """Split rows of one batch: micro-batches of the given sizes on rank 0, trajectories start, start + 1, ..."""
+    rows, t = [], start
     for u, size in enumerate(micro_sizes):
         for pos in range(1, size + 1):
             rows.append({"batch": batch, "arm": "A1", "set": "S0", "rank": 0, "mini": 0, "micro": u, "position": pos,
@@ -204,6 +204,23 @@ def test_gradients_follow_the_a1_aggregation(setup, tmp_path):
     assert prog["sq_norm"]["P"] == pytest.approx(float(gp.double().pow(2).sum()), rel=1e-5)
 
 
+def test_row_weights_equal_the_a1_formula(setup, tmp_path):
+    """weight_P = B_m / B_mini and weight_U = (B_m / B_mini) x T_i / T_m, with T = the tokens of
+    response_mask x self_distillation_mask (core_algos.py 1207-1209), on synthetic rows."""
+    actor, data = setup
+    sd = {0: 1.0, 1: 0.0, 2: 1.0}
+    rows_data = {t: {**data[t], "self_distillation_mask": torch.tensor([sd[t]])} for t in sd}
+    ctx = ToyCtx(actor, rows_data)
+    run(ctx, tmp_path, split_rows("A1-S0-1", [3]))
+    tokens = {t: float(data[t]["response_mask"].sum()) * sd[t] for t in sd}
+    t_m = sum(tokens.values())
+    for rec in records(tmp_path, "A1-S0-1"):
+        assert rec["weight_P"] == 3 / B_MINI
+        assert rec["loss_tokens"] == tokens[rec["traj"]]
+        assert rec["weight_U"] == pytest.approx(3 / B_MINI * tokens[rec["traj"]] / t_m, rel=1e-12)
+    assert records(tmp_path, "A1-S0-1")[1]["weight_U"] == 0.0
+
+
 def test_resume_gives_the_same_outputs(setup, tmp_path):
     """Item 7.5: a forced stop after one micro-batch and a restart give the files of a run without a stop."""
     actor, data = setup
@@ -223,12 +240,23 @@ def test_resume_gives_the_same_outputs(setup, tmp_path):
     assert not (tmp_path / "b" / "vectors" / "partial_A1-S0-1_P.pt").exists()
 
 
+def test_pilot_subset_skips_a_batch_without_selected_micro_batches(setup, tmp_path):
+    actor, data = setup
+    ctx = ToyCtx(actor, data)
+    rows = split_rows("A1-S0-3", [3, 2])
+    res = run(ctx, tmp_path, rows, pilot=[["A1-S0-1", 0, 0, 0]])
+    assert res["skipped"] and not (tmp_path / "PACKROWS_A1-S0-3.jsonl").exists()
+    assert not list((tmp_path / "vectors").glob("*.pt"))
+    res = run(ctx, tmp_path, rows, pilot=[["A1-S0-3", 0, 0, 1]])
+    assert [r["micro"] for r in records(tmp_path, "A1-S0-3")] == [1, 1]
+
+
 def test_gram_diagonal_equals_separate_norms(setup, tmp_path):
     """G5 form: the Gram diagonal equals the squared norms computed at the batch end; the vector files are removed."""
     actor, data = setup
     ctx = ToyCtx(actor, data)
-    for b in ("A1-S0-1", "A1-S0-2"):
-        run(ctx, tmp_path, split_rows(b, [3, 2]))
+    run(ctx, tmp_path, split_rows("A1-S0-1", [3, 1]))
+    run(ctx, tmp_path, split_rows("A1-S0-2", [2], start=4))
     pack.gram(tmp_path)
     g = json.loads((tmp_path / "GRAM_PACK.json").read_text())
     for i, n in enumerate(g["names"]):
@@ -236,6 +264,10 @@ def test_gram_diagonal_equals_separate_norms(setup, tmp_path):
     assert np.allclose(np.asarray(g["gram"]), np.asarray(g["gram"]).T)
     assert not list((tmp_path / "vectors").glob("*.pt"))
     assert (tmp_path / "GRAM_PACK.sha256").read_text().split()[0] == pack.sha256_file(tmp_path / "GRAM_PACK.json")
+    res = pstats.compute(tmp_path, 50)  # end to end: pack.py outputs -> stats.py, 2 batches as in the pilot
+    pg = res["gradients"]["per_group"]["A1-S0"]
+    assert pg["pairs"] == 1 and pg["n_grp"]["value"] > 0 and math.isfinite(pg["c_e"]["value"])
+    assert res["groups"]["A1-S0"]["packing"]["micro_batches"] == 3
 
 
 def test_split_matches_the_a1_partition_functions():
