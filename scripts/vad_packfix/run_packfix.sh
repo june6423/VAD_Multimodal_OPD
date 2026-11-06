@@ -9,7 +9,8 @@
 #   3. DIRECTIVE-VLM-VAD-PACKFIX-001-007: the training runs with no judge on the GPU, no in-training validation
 #      (trainer.test_freq=-1, trainer.val_before_train=False) and actor optimizer_offload=False. The A1 training calls
 #      no reward function (ray_trainer.py 654-667 and 2792-2793: zero reward for vopd with teacher_always_on and a
-#      teacher_image_key). The judge API base of the training points to a closed port, so an unexpected judge call
+#      teacher_image_key). The judge API base of the training points to judge_stub.py (CPU): it lists the judge model
+#      for the endpoint check of train_vad.sh and refuses each judge call (HTTP 503), so an unexpected judge call
 #      fails. The vLLM memory share of the rollout engine is ROLLOUT_GPU_UTIL.
 #   4. actor.calculate_entropy=True with actor.entropy_coeff=0 (the loss does not change).
 #   5. trainer.logger console and file (VERL_FILE_LOGGER_PATH=<out>/metrics_<run>_<start>.jsonl), rollout dumps in
@@ -64,6 +65,14 @@ nvidia-smi --query-gpu=timestamp,memory.used,memory.total,utilization.gpu --form
   >> "$out/gpu_mem.csv" 2>&1 &
 smi_pid=$!
 judge_pid=""
+stub_pid=""
+stop_stub() {
+  [[ -n "$stub_pid" ]] || return 0
+  kill "$stub_pid" 2>/dev/null
+  wait "$stub_pid" 2>/dev/null
+  stub_pid=""
+  echo "judge stub stopped: $(grep -c ' served$' "$out/judge_stub.log" 2>/dev/null) model-list requests, $(grep -c ' refused$' "$out/judge_stub.log" 2>/dev/null) refused judge calls" >> "$log"
+}
 stop_judge() {
   [[ -n "$judge_pid" ]] || return 0
   touch "$out/judge/STOP"
@@ -72,6 +81,7 @@ stop_judge() {
   judge_pid=""
 }
 finish() {
+  stop_stub
   stop_judge
   kill "$smi_pid" 2>/dev/null
 }
@@ -97,7 +107,6 @@ export EXPERIMENT_NAME="PACKFIX-$arm"
 export TRAINER_DEFAULT_LOCAL_DIR="$out/checkpoints"
 export TRAINER_ROLLOUT_DATA_DIR="$out/rollouts"
 export TRAINER_MAX_ACTOR_CKPT_TO_KEEP=3
-export BENCHMARK_EVAL_JUDGE_API_BASE="http://127.0.0.1:9/v1"  # training: no judge (closed port)
 export BENCHMARK_EVAL_JUDGE_MODEL=mistralai/Mistral-Small-3.2-24B-Instruct-2506
 export VAD_TOKSTATS_DIR="$out/tokstats"
 export ROLLOUT_GPU_MEMORY_UTILIZATION="$rollout_util"
@@ -155,9 +164,19 @@ validate() {
   [[ $code -eq 0 && -f "$out/validation/$step.jsonl" ]]
 }
 
-# Training (no judge on the GPU).
+# Training (no judge on the GPU). The endpoint check of train_vad.sh needs a judge model list: judge_stub.py (CPU)
+# serves it and refuses each judge call (HTTP 503), so an unexpected judge call fails.
 latest=$(cat "$out/checkpoints/latest_checkpointed_iteration.txt" 2>/dev/null || echo 0)
 if [[ "$latest" -lt "$steps" ]]; then
+  stub_port=$("$py" scripts/vad_packfix/free_port.py)
+  "$py" scripts/vad_packfix/judge_stub.py "$stub_port" "$BENCHMARK_EVAL_JUDGE_MODEL" "$out/judge_stub.log" &
+  stub_pid=$!
+  export BENCHMARK_EVAL_JUDGE_API_BASE="http://127.0.0.1:$stub_port/v1"
+  for _ in $(seq 1 50); do
+    curl -fsS --max-time 2 "$BENCHMARK_EVAL_JUDGE_API_BASE/models" > /dev/null 2>&1 && break
+    sleep 0.2
+  done
+  echo "judge stub (training) pid $stub_pid port $stub_port" >> "$log"
   if [[ "$pilot" == 1 ]]; then
     if [[ ! -d "$out/checkpoints/global_step_2" ]]; then
       train 2 2 run1 || exit 1
@@ -172,6 +191,7 @@ if [[ "$latest" -lt "$steps" ]]; then
   else
     train 20 10 full || exit 1
   fi
+  stop_stub
 fi
 latest=$(cat "$out/checkpoints/latest_checkpointed_iteration.txt" 2>/dev/null || echo 0)
 [[ "$latest" -ge "$steps" ]] || { echo "latest checkpoint $latest < $steps" >> "$log"; exit 1; }
