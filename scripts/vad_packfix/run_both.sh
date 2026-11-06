@@ -16,6 +16,10 @@ mkdir -p "$out"
 cd "$root" || exit 1
 log="$out/RUN_BOTH.txt"
 echo "== date $(date -u +%Y-%m-%dT%H:%M:%SZ) git HEAD $(git -c safe.directory="$root" rev-parse HEAD) PILOT $pilot" >> "$log"
+# Host memory against the container limit (DIRECTIVE-VLM-VAD-PACKFIX-001-003): memwatch.sh for the whole task.
+bash scripts/vad_packfix/memwatch.sh "$out/memwatch.log" 400000 &
+watch_pid=$!
+trap 'kill "$watch_pid" 2>/dev/null' EXIT
 for arm in F B; do
   start=$(date +%s)
   ARM="$arm" bash scripts/vad_packfix/run_packfix.sh "$out/$arm"

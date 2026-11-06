@@ -12,8 +12,10 @@
 #      (as in A1), validation dumps in <out>/validation (per-row judge records), W&B off.
 #   6. Fast validation at steps 0, 10 and 20: trainer.val_before_train=True after the train_vad.sh value, and the
 #      A1 test_freq 10. Pilot: 20 rows (val_subset.py) at steps 0, 1 and 2.
-#   7. Host memory below the container limit of b200 (DIRECTIVE-VLM-VAD-PACKFIX-001-001): rollout.agent.num_workers 2
-#      (A1: 8) and the vLLM multimodal processor cache off (mm_processor_cache_gb 0). Throughput settings only.
+#   7. Host memory below the container limit of b200 (HANDOFF-VLM-VAD-PACKFIX-001-R4 Definition 4,
+#      DIRECTIVE-VLM-VAD-PACKFIX-001-003): the Ray worker hook scripts/vad_packfix/hostmem.py (shared equal
+#      pixel_values, one image decode for each prompt group, release of the unused reference model), the vLLM
+#      multimodal processor cache off (mm_processor_cache_gb 0), and rollout.agent.num_workers 8 as in A1.
 # Kept from A1: the train data, model, teacher, batch 96 x 8, mini-batch 96, ppo_max_token_len_per_gpu 9216, offload,
 # seeds 42, MAX_MODEL_LEN 17920, the reward function and its judge settings.
 # A restarted task resumes through trainer.resume_mode=auto (train_vad.sh). A finished arm is not run again.
@@ -100,9 +102,10 @@ export ROLLOUT_GPU_MEMORY_UTILIZATION="$rollout_util"
 export TRAINER_LOGGER='["console","file"]'
 export WANDB_MODE=disabled WANDB_DIR="$out/wandb"
 export VAD_PACKFIX="$flag"
-export ROLLOUT_AGENT_NUM_WORKERS=2
+export ROLLOUT_AGENT_NUM_WORKERS=8
 common=(
   "++ray_kwargs.ray_init.runtime_env.env_vars.VAD_PACKFIX='$flag'"
+  ++ray_kwargs.ray_init.runtime_env.worker_process_setup_hook=scripts.vad_packfix.hostmem.setup
   ++actor_rollout_ref.rollout.engine_kwargs.vllm.mm_processor_cache_gb=0
   actor_rollout_ref.actor.calculate_entropy=True
   actor_rollout_ref.actor.entropy_coeff=0
