@@ -191,9 +191,22 @@ def test_release_reference_frees_the_module_and_empties_the_pinned_host_cache(mo
                               config=types.SimpleNamespace(actor={"use_kl_loss": False}),
                               actor=types.SimpleNamespace(teacher_module=object()))
     del ref
-    assert hostmem.release_reference(w) is not None
+    log = hostmem.release_reference(w)
     assert alive() is None
     assert calls == [1]
+    assert [line.split()[0] for line in log] == ["before", "after_gc", "after_host_empty_cache", "after_malloc_trim"]
+
+
+def test_release_reference_names_a_referrer_that_keeps_the_module():
+    ref = torch.nn.Linear(4, 4)
+    keeper = [ref]
+    w = types.SimpleNamespace(_is_actor=True, ref_module_fsdp=ref, ref_policy=object(),
+                              config=types.SimpleNamespace(actor={"use_kl_loss": False}),
+                              actor=types.SimpleNamespace(teacher_module=object()))
+    del ref
+    log = hostmem.release_reference(w)
+    assert any(line.startswith("module_still_referenced") and "list" in line for line in log)
+    assert keeper
 
 
 def test_check_waits_for_all_agent_workers(tmp_path):

@@ -13,9 +13,11 @@ The fix changes no value that training reads. TASK-VLM-VAD-PACKFIX-001-011 measu
 """
 
 import contextvars
+import ctypes
 import functools
 import gc
 import os
+import weakref
 
 import torch
 
@@ -95,23 +97,41 @@ class _ReleasedReference:
         raise RuntimeError("VAD_HOSTMEM: the reference model was removed after init_model; a reference call is unexpected")
 
 
+def _mem_state(step):
+    """One release-log line: the RSS and, with CUDA, the pinned host bytes in use and reserved (GiB)."""
+    line = f"{step} rss_gib {_rss_gib():.1f}"
+    if torch.cuda.is_available():
+        s = torch.cuda.host_memory_stats()
+        line += (f" pinned_allocated_gib {s.get('allocated_bytes.current', -2**30) / 2**30:.1f}"
+                 f" pinned_reserved_gib {s.get('reserved_bytes.current', -2**30) / 2**30:.1f}")
+    return line
+
+
 def release_reference(worker):
-    """Remove the unused reference model of the actor worker. Return the RSS before and after (GiB) or None."""
+    """Remove the unused reference model of the actor worker. Return the release log (one line per step) or None."""
     ref = getattr(worker, "ref_module_fsdp", None)
     if ref is None or not getattr(worker, "_is_actor", False) or worker.config.actor.get("use_kl_loss", False):
         return None
     if getattr(worker.actor, "teacher_module", None) is ref:
         return None
-    before = _rss_gib()
+    log = [_mem_state("before")]
+    alive = weakref.ref(ref)
     worker.ref_module_fsdp = None
     worker.ref_policy = _ReleasedReference()
     del ref
     gc.collect()
+    log.append(_mem_state("after_gc"))
+    if alive() is not None:  # a reference stays: name the referrer types (DT STATUS on TASK-012, item 2.2)
+        kinds = sorted({type(r).__name__ for r in gc.get_referrers(alive())})
+        log.append(f"module_still_referenced referrer_types {','.join(kinds)}")
     if torch.cuda.is_available():
         # The reference parameters are pinned (CPUOffloadPolicy(pin_memory=True)). The caching host allocator keeps
         # freed pinned blocks, so the RSS stays (TASK-VLM-VAD-PACKFIX-001-012: 60.2 -> 60.2 GiB) until this call.
         torch._C._host_emptyCache()
-    return before, _rss_gib()
+        log.append(_mem_state("after_host_empty_cache"))
+    ctypes.CDLL("libc.so.6").malloc_trim(0)
+    log.append(_mem_state("after_malloc_trim"))
+    return log
 
 
 def _patch_workerdict():
@@ -122,10 +142,9 @@ def _patch_workerdict():
     @functools.wraps(orig)
     def init_model(self, *args, **kwargs):
         result = orig(self, *args, **kwargs)
-        rss = release_reference(self)
-        if rss is not None:
-            print(f"VAD_HOSTMEM pid={os.getpid()} reference model removed rss_gib {rss[0]:.1f} -> {rss[1]:.1f}",
-                  flush=True)
+        log = release_reference(self)
+        for line in log or []:
+            print(f"VAD_HOSTMEM pid={os.getpid()} reference model removed {line}", flush=True)
         return result
 
     ActorRolloutRefWorker.init_model = init_model

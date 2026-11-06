@@ -90,7 +90,7 @@ VERL_FILE_LOGGER_PATH="$out/metrics.jsonl" TOTAL_TRAINING_STEPS=1 TRAINER_SAVE_F
 code=$?
 echo "train exit $code (a nonzero exit is expected: the hook stops the run) wall_seconds $(( $(date +%s) - start ))" >> "$log"
 grep -c "HOSTMEM_CHECK hook installed" "$out/console.log" | sed 's/^/hook install lines: /' >> "$log"
-grep -E "VAD_HOSTMEM pid=[0-9]+ reference model removed|HOSTMEM_CHECK pid=" "$out/console.log" | head -n 12 >> "$log"
+grep -E "VAD_HOSTMEM pid=[0-9]+ reference model removed|HOSTMEM_CHECK pid=" "$out/console.log" | head -n 20 >> "$log"
 "$py" scripts/vad_packfix/hostmem_check.py "$out" "$out/HOSTMEM_CHECK.json" >> "$log" 2>&1
 check=$?
 echo "check exit $check" >> "$log"
