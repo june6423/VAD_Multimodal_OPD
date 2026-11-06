@@ -107,6 +107,10 @@ def release_reference(worker):
     worker.ref_policy = _ReleasedReference()
     del ref
     gc.collect()
+    if torch.cuda.is_available():
+        # The reference parameters are pinned (CPUOffloadPolicy(pin_memory=True)). The caching host allocator keeps
+        # freed pinned blocks, so the RSS stays (TASK-VLM-VAD-PACKFIX-001-012: 60.2 -> 60.2 GiB) until this call.
+        torch._C._host_emptyCache()
     return before, _rss_gib()
 
 

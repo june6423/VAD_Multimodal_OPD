@@ -103,6 +103,7 @@ export TRAINER_LOGGER='["console","file"]'
 export WANDB_MODE=disabled WANDB_DIR="$out/wandb"
 export VAD_PACKFIX="$flag"
 export ROLLOUT_AGENT_NUM_WORKERS=8
+export RAY_DEDUP_LOGS=0  # each worker prints its VAD_HOSTMEM lines (logging only)
 common=(
   "++ray_kwargs.ray_init.runtime_env.env_vars.VAD_PACKFIX='$flag'"
   ++ray_kwargs.ray_init.runtime_env.worker_process_setup_hook=scripts.vad_packfix.hostmem.setup

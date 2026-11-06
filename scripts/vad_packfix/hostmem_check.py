@@ -21,6 +21,7 @@ import json
 import os
 import pickle
 import sys
+import time
 
 import numpy as np
 import torch
@@ -59,6 +60,16 @@ class _FakeServerManager:
         from verl.workers.rollout.replica import TokenOutput
 
         return TokenOutput(token_ids=[self.token_id] * self.length, log_probs=[0.0] * self.length)
+
+
+def wait_for_workers(out, n_workers, timeout=900, poll=5):
+    """Wait until n_workers worker files exist in out, or until the timeout. Return the count of worker files."""
+    deadline = time.monotonic() + timeout
+    while True:
+        count = len(glob.glob(os.path.join(out, "hostmem_check_*.json")))
+        if count >= n_workers or time.monotonic() >= deadline:
+            return count
+        time.sleep(poll)
 
 
 async def _run_rows(self, sub, use_hostmem):
@@ -136,6 +147,9 @@ async def _check(self, batch, originals, patched):
     with open(os.path.join(OUT, f"hostmem_check_{pid}.json"), "w") as f:
         json.dump(summary, f, indent=1)
     print(f"HOSTMEM_CHECK pid={pid} rows={len(sub)} differences={len(diffs)} shared_rows={shared_rows}", flush=True)
+    # TASK-VLM-VAD-PACKFIX-001-012: the first worker that raised stopped the run before the other workers wrote.
+    n_workers = int(self.config.actor_rollout_ref.rollout.agent.num_workers)
+    await asyncio.to_thread(wait_for_workers, OUT, n_workers)
     raise RuntimeError("HOSTMEM_CHECK: check done; the check run stops before the step-1 generation by design")
 
 

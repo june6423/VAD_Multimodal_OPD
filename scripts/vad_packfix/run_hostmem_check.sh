@@ -71,6 +71,7 @@ export TRAINER_LOGGER='["console","file"]'
 export WANDB_MODE=disabled WANDB_DIR="$out/wandb"
 export VAD_PACKFIX=1
 export ROLLOUT_AGENT_NUM_WORKERS=8
+export RAY_DEDUP_LOGS=0  # each worker prints its lines (logging only)
 start=$(date +%s)
 echo "== train start $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
 VERL_FILE_LOGGER_PATH="$out/metrics.jsonl" TOTAL_TRAINING_STEPS=1 TRAINER_SAVE_FREQ=1 \

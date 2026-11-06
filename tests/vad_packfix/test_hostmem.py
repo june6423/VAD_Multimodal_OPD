@@ -175,3 +175,31 @@ def test_release_reference_removes_only_an_unused_reference():
     for args in [(True, False), (False, True)]:
         w, ref = worker(*args)
         assert hostmem.release_reference(w) is None and w.ref_module_fsdp is ref
+
+
+def test_release_reference_frees_the_module_and_empties_the_pinned_host_cache(monkeypatch):
+    # TASK-VLM-VAD-PACKFIX-001-012: the RSS stayed 60.2 GiB. The reference parameters are pinned (CPUOffloadPolicy),
+    # and the caching host allocator keeps freed pinned blocks until torch._C._host_emptyCache().
+    import weakref
+
+    calls = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch._C, "_host_emptyCache", lambda: calls.append(1), raising=False)
+    ref = torch.nn.Linear(4, 4)
+    alive = weakref.ref(ref)
+    w = types.SimpleNamespace(_is_actor=True, ref_module_fsdp=ref, ref_policy=types.SimpleNamespace(actor_module=ref),
+                              config=types.SimpleNamespace(actor={"use_kl_loss": False}),
+                              actor=types.SimpleNamespace(teacher_module=object()))
+    del ref
+    assert hostmem.release_reference(w) is not None
+    assert alive() is None
+    assert calls == [1]
+
+
+def test_check_waits_for_all_agent_workers(tmp_path):
+    from scripts.vad_packfix import hostmem_check
+
+    (tmp_path / "hostmem_check_1.json").write_text("{}")
+    assert hostmem_check.wait_for_workers(str(tmp_path), 2, timeout=0.3, poll=0.1) == 1
+    (tmp_path / "hostmem_check_2.json").write_text("{}")
+    assert hostmem_check.wait_for_workers(str(tmp_path), 2, timeout=60, poll=0.1) == 2
