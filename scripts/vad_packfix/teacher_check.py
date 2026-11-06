@@ -115,17 +115,26 @@ def _remove_teacher(worker, actor):
         for t in (fp, getattr(fp, "_local_shard", None), getattr(fp, "_cpu_grad", None)):
             if t is not None and t.untyped_storage().nbytes() > 0:
                 storages[t.untyped_storage().data_ptr()] = t.untyped_storage()
+        # TASK-VLM-VAD-PACKFIX-001-020: the pinned storages are not resizable. Thus the handles drop each reference.
+        fp.data = torch.empty(0, dtype=fp.dtype)
+        fp._local_shard = fp.data
+        fp._cpu_grad = None
     worker.teacher_module_fsdp = None
     actor.teacher_module = None
     del teacher
-    gc.collect()
     freed = sum(s.nbytes() for s in storages.values())
     for s in storages.values():
-        s.resize_(0)
-    del storages
-    torch._C._host_emptyCache()
+        if s.resizable():
+            s.resize_(0)
+    del storages, t, fp, h
+    gc.collect()
     ctypes.CDLL("libc.so.6").malloc_trim(0)
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch._C._host_emptyCache()
+        torch.cuda.empty_cache()
+        pinned = torch.cuda.host_memory_stats().get("allocated_bytes.current", 0) / 2**30
+        if pinned > 2:  # the rebuild adds about 17 GiB: stop before the container limit
+            raise RuntimeError(f"TEACHER_CHECK: {pinned:.1f} GiB pinned host memory stays after the teacher removal")
     return freed / 2**30
 
 
