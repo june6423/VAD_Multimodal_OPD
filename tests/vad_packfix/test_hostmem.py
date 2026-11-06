@@ -194,7 +194,26 @@ def test_release_reference_frees_the_module_and_empties_the_pinned_host_cache(mo
     log = hostmem.release_reference(w)
     assert alive() is None
     assert calls == [1]
-    assert [line.split()[0] for line in log] == ["before", "after_gc", "after_host_empty_cache", "after_malloc_trim"]
+    assert [line.split()[0] for line in log] == ["before", "after_gc", "after_storage_free", "after_host_empty_cache",
+                                                 "after_malloc_trim"]
+
+
+def test_release_reference_frees_storages_that_a_hidden_holder_keeps_but_not_shared_ones():
+    # TASK-VLM-VAD-PACKFIX-001-015: after the release, the 57 flat parameters (16.91 GiB) stayed alive without a
+    # Python referrer. The release must free their storages, but never a storage of the actor or the teacher.
+    ref = torch.nn.Linear(64, 64)
+    teacher = torch.nn.Linear(64, 64)
+    teacher.bias = ref.bias  # a shared storage
+    hidden = [ref.weight]  # the holder that gc does not see on b200
+    w = types.SimpleNamespace(_is_actor=True, ref_module_fsdp=ref, ref_policy=object(),
+                              actor_module_fsdp=torch.nn.Linear(64, 64), teacher_module_fsdp=teacher,
+                              config=types.SimpleNamespace(actor={"use_kl_loss": False}),
+                              actor=types.SimpleNamespace(teacher_module=teacher))
+    del ref
+    log = hostmem.release_reference(w)
+    assert hidden[0].untyped_storage().nbytes() == 0
+    assert teacher.bias.untyped_storage().nbytes() == 64 * 4
+    assert any(line.startswith("after_storage_free") and "freed_storages 1 " in line for line in log)
 
 
 def test_release_reference_names_a_referrer_that_keeps_the_module():

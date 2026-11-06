@@ -115,6 +115,13 @@ def release_reference(worker):
     if getattr(worker.actor, "teacher_module", None) is ref:
         return None
     log = [_mem_state("before")]
+    # TASK-VLM-VAD-PACKFIX-001-015: after the release the 57 FSDP flat parameters (16.91 GiB, CPU) stayed alive
+    # without a Python referrer. Thus the release frees their storages. A storage that the actor or the teacher also
+    # uses stays (TASK-015: 0 shared storages).
+    kept = {t.untyped_storage().data_ptr() for m in (getattr(worker, "actor_module_fsdp", None),
+                                                    getattr(worker, "teacher_module_fsdp", None)) if m is not None
+            for t in list(m.parameters()) + list(m.buffers())}
+    storages = {p.untyped_storage().data_ptr(): p.untyped_storage() for p in ref.parameters()}
     alive = weakref.ref(ref)
     worker.ref_module_fsdp = None
     worker.ref_policy = _ReleasedReference()
@@ -124,6 +131,14 @@ def release_reference(worker):
     if alive() is not None:  # a reference stays: name the referrer types (DT STATUS on TASK-012, item 2.2)
         kinds = sorted({type(r).__name__ for r in gc.get_referrers(alive())})
         log.append(f"module_still_referenced referrer_types {','.join(kinds)}")
+    freed = 0
+    for ptr, s in storages.items():
+        if ptr not in kept and s.nbytes() > 0:
+            freed += s.nbytes()
+            s.resize_(0)
+    log.append(_mem_state(f"after_storage_free freed_storages {sum(p not in kept for p in storages)} "
+                          f"freed_gib {freed / 2**30:.2f} kept_shared {sum(p in kept for p in storages)}"))
+    del storages
     if torch.cuda.is_available():
         # The reference parameters are pinned (CPUOffloadPolicy(pin_memory=True)). The caching host allocator keeps
         # freed pinned blocks, so the RSS stays (TASK-VLM-VAD-PACKFIX-001-012: 60.2 -> 60.2 GiB) until this call.
