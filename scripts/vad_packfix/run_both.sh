@@ -2,7 +2,7 @@
 # Entry point of the pilot task and the FULL task of VLM-VAD-PACKFIX-001 (HANDOFF-VLM-VAD-PACKFIX-001-R2, Part B
 # items 2 and 4): run_packfix.sh for arm F into <out>/F, then for arm B into <out>/B, then stats.py.
 # PILOT=1 adds projection.py (PROJECTION.json) and the end cleanup (the pilot checkpoints are removed after the
-# checks). The FULL task keeps the checkpoints of steps 10 and 20 on b200.
+# checks). The FULL task keeps the checkpoints of steps 10 and 20 on b200. Both write STEPPEAK.json (steppeak.py).
 # A restarted task skips a finished arm (TRAIN_DONE) and resumes an unfinished arm from its last checkpoint.
 # Usage: B200_ROOT=<root> ENV_ROOT=<env root> CUDA_VISIBLE_DEVICES=0 [PILOT=1] [JUDGE_GPU_UTIL] [ROLLOUT_GPU_UTIL] \
 #   scripts/vad_packfix/run_both.sh <output_root>
@@ -16,10 +16,31 @@ mkdir -p "$out"
 cd "$root" || exit 1
 log="$out/RUN_BOTH.txt"
 echo "== date $(date -u +%Y-%m-%dT%H:%M:%SZ) git HEAD $(git -c safe.directory="$root" rev-parse HEAD) PILOT $pilot" >> "$log"
+# DIRECTIVE-VLM-VAD-PACKFIX-001-004 and -005: no orphan Ray process before the run, oom_kill of the container cgroup
+# before and after, and the memory and copy times of each step (steppeak.py, STEPPEAK.json; also after a failed arm).
+cg="/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)"
+while [[ "$cg" != /sys/fs/cgroup && ( ! -r "$cg/memory.max" || "$(cat "$cg/memory.max")" == max ) ]]; do
+  cg="$(dirname "$cg")"
+done
+oom_kill() { awk '$1=="oom_kill"{print $2}' "$cg/memory.events"; }
+echo "container cgroup $cg memory.max $(cat "$cg/memory.max") oom_kill before $(oom_kill)" >> "$log"
+orphans=$(ps -eo pid,ppid,args | awk '$2==1 && $3 ~ /^ray::/' | wc -l)
+echo "orphan ray processes before the run: $orphans" >> "$log"
+[[ "$orphans" -eq 0 ]] || { ps -eo pid,ppid,etime,rss,args | awk '$2==1 && $5 ~ /^ray::/' >> "$log"; exit 1; }
 # Host memory against the container limit (DIRECTIVE-VLM-VAD-PACKFIX-001-003): memwatch.sh for the whole task.
 bash scripts/vad_packfix/memwatch.sh "$out/memwatch.log" 400000 &
 watch_pid=$!
-trap 'kill "$watch_pid" 2>/dev/null' EXIT
+memory_summary() {
+  sleep 10  # memwatch takes the samples after the end
+  kill "$watch_pid" 2>/dev/null
+  {
+    echo "oom_kill after $(oom_kill)"
+    echo "orphan ray processes after the run: $(ps -eo pid,ppid,args | awk '$2==1 && $3 ~ /^ray::/' | wc -l)"
+  } >> "$log"
+  PYTHONPATH="$root" "$py" scripts/vad_packfix/steppeak.py "$out" "$out/STEPPEAK.json" >> "$log" 2>&1
+  echo "steppeak exit $?" >> "$log"
+}
+trap memory_summary EXIT
 for arm in F B; do
   start=$(date +%s)
   ARM="$arm" bash scripts/vad_packfix/run_packfix.sh "$out/$arm"

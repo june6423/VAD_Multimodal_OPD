@@ -76,13 +76,14 @@ def check_cast_forward(offload):
 
 def check_cast_releases_fp32_storage():
     """Candidate 2: after the cast, the module attributes are views of the bf16 flat parameter."""
+    # TASK-VLM-VAD-PACKFIX-001-019: an address test fails on CUDA, because the caching allocator gives the freed fp32
+    # block of one handle to the bf16 tensor of the next handle. Thus the check compares with the new flat parameter.
     cast = _fsdp(_model(), False)
-    old = {m._handle.flat_param.untyped_storage().data_ptr() for m in cast.modules()
-           if isinstance(m, FSDP) and m._handle is not None}
     hostmem.cast_flat_params(cast)
     lin = cast.module[0].module.lin
+    flat = cast.module[0]._handle.flat_param
     assert lin.weight.dtype == torch.bfloat16
-    assert lin.weight.untyped_storage().data_ptr() not in old
+    assert lin.weight.untyped_storage().data_ptr() == flat.untyped_storage().data_ptr()
     return {}
 
 

@@ -147,8 +147,11 @@ def test_setup_keeps_the_verl_dispatch_attributes():
              (AgentLoopBase, "process_vision_info"): AgentLoopBase.process_vision_info,
              (AgentLoopWorker, "generate_sequences"): AgentLoopWorker.generate_sequences,
              (AgentLoopWorker, "_compute_multi_modal_inputs"): AgentLoopWorker._compute_multi_modal_inputs}
+    from verl.utils.tracking import Tracking
+
     saved.update({(fsdp_workers, name): getattr(fsdp_workers, name) for name in (
         "offload_fsdp_model_to_cpu", "offload_fsdp_optimizer", "load_fsdp_model_to_gpu", "load_fsdp_optimizer")})
+    saved[(Tracking, "log")] = Tracking.log
     before = getattr(ActorRolloutRefWorker.init_model, MAGIC_ATTR)
     try:
         hostmem.setup()

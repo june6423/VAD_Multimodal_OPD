@@ -228,9 +228,28 @@ def offload_optimizer_pageable(optimizer):
     _log_copy("offload_optimizer", t0, nbytes)
 
 
+def _utc():
+    return time.strftime("%H:%M:%S", time.gmtime())
+
+
 def _log_copy(name, t0, nbytes=None):
     size = "" if nbytes is None else f" gib {nbytes / 2**30:.2f}"
-    print(f"VAD_HOSTMEM pid={os.getpid()} copy {name} seconds {time.perf_counter() - t0:.2f}{size}", flush=True)
+    print(f"VAD_HOSTMEM pid={os.getpid()} copy {name} seconds {time.perf_counter() - t0:.2f}{size} utc {_utc()}",
+          flush=True)
+
+
+def _patch_tracking():
+    """Log the UTC time of each metrics log call (the end of each step) for steppeak.py. Logging only."""
+    from verl.utils.tracking import Tracking
+
+    orig = Tracking.log
+
+    @functools.wraps(orig)
+    def log(self, data, step, *args, **kwargs):
+        print(f"VAD_HOSTMEM pid={os.getpid()} step_log step {step} utc {_utc()}", flush=True)
+        return orig(self, data, step, *args, **kwargs)
+
+    Tracking.log = log
 
 
 def _timed_load(name, fn):
@@ -279,4 +298,5 @@ def _patch_workerdict(teacher_bf16):
 def setup(teacher_bf16=True):
     _patch_workerdict(teacher_bf16)
     _patch_agent_loop()
+    _patch_tracking()
     print(f"VAD_HOSTMEM hook installed pid={os.getpid()}", flush=True)
