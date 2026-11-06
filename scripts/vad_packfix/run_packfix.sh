@@ -135,6 +135,8 @@ if [[ "$pilot" == 1 ]]; then
     train 1 1 True run1 || exit 1
   fi
   [[ -d "$out/checkpoints/global_step_1" ]] || { echo "no checkpoint after step 1" >> "$log"; exit 1; }
+  # Memory measurement of DIRECTIVE-VLM-VAD-PACKFIX-001-004 (run_memmeasure.sh): step 1 only.
+  [[ "${MEASURE_RUN1_ONLY:-0}" == 1 ]] && { echo "measurement: stop after run1" >> "$log"; exit 0; }
   echo "stop after step 1; resume" >> "$log"
   train 2 1 False run2 || exit 1
   grep -n -i -E "resum|load(ing)? (from )?checkpoint|global_step_1" "$out/console_run2.log" | head -n 20 \
