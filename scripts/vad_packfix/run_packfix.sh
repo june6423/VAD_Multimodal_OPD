@@ -4,14 +4,16 @@
 # Runs scripts/train_vad.sh --profile 4b on the one B200 with the A1 environment overrides of
 # scripts/vad_rollout/train_arm.sh and the Definition 4 changes (both arms equal):
 #   1. TRAINER_N_GPUS_PER_NODE=1, CUDA_VISIBLE_DEVICES=0.
-#   2. TOTAL_TRAINING_STEPS 20 and TRAINER_SAVE_FREQ 10 (pilot: 1, then 2 after a resume; save each step).
+#   2. TOTAL_TRAINING_STEPS 20 and TRAINER_SAVE_FREQ 10 (pilot, DT ANSWER on TASK-VLM-VAD-PACKFIX-001-022 P3:
+#      steps 1 and 2 in one process with a save after step 2, then step 3 after a resume, so that the pilot measures
+#      a step after the first optimizer step in a continuous process).
 #   3. vLLM memory share of the rollout engine ROLLOUT_GPU_UTIL and of the Mistral judge JUDGE_GPU_UTIL. The judge
 #      runs next to training (the A1 reward calls it for each rule miss) with scripts/vad_packfix/judge_serve.sh.
 #   4. actor.calculate_entropy=True with actor.entropy_coeff=0 (the loss does not change).
 #   5. trainer.logger console and file (VERL_FILE_LOGGER_PATH=<out>/metrics.jsonl), rollout dumps in <out>/rollouts
 #      (as in A1), validation dumps in <out>/validation (per-row judge records), W&B off.
 #   6. Fast validation at steps 0, 10 and 20: trainer.val_before_train=True after the train_vad.sh value, and the
-#      A1 test_freq 10. Pilot: 20 rows (val_subset.py) at steps 0, 1 and 2.
+#      A1 test_freq 10. Pilot: 20 rows (val_subset.py) at steps 0, 2 and 3 (verl validates at the last step of a run).
 #   7. Host memory below the container limit of b200 (HANDOFF-VLM-VAD-PACKFIX-001-R4 Definition 4,
 #      DIRECTIVE-VLM-VAD-PACKFIX-001-003): the Ray worker hook scripts/vad_packfix/hostmem.py (shared equal
 #      pixel_values, one image decode for each prompt group, release of the unused reference model; with
@@ -43,7 +45,7 @@ export PYTHONDONTWRITEBYTECODE=1
   df -B1 "$out"
 } >> "$log" 2>&1
 
-if [[ "$pilot" == 1 ]]; then steps=2; else steps=20; fi
+if [[ "$pilot" == 1 ]]; then steps=3; else steps=20; fi
 latest=$(cat "$out/checkpoints/latest_checkpointed_iteration.txt" 2>/dev/null || echo 0)
 if [[ "$latest" -ge "$steps" && -f "$out/TRAIN_DONE" ]]; then
   echo "arm $arm already finished (latest checkpoint $latest)" >> "$log"
@@ -132,15 +134,15 @@ train() {
 }
 
 if [[ "$pilot" == 1 ]]; then
-  if [[ ! -d "$out/checkpoints/global_step_1" ]]; then
-    train 1 1 True run1 || exit 1
+  if [[ ! -d "$out/checkpoints/global_step_2" ]]; then
+    train 2 2 True run1 || exit 1
   fi
-  [[ -d "$out/checkpoints/global_step_1" ]] || { echo "no checkpoint after step 1" >> "$log"; exit 1; }
-  # Memory measurement of DIRECTIVE-VLM-VAD-PACKFIX-001-004 (run_memmeasure.sh): step 1 only.
+  [[ -d "$out/checkpoints/global_step_2" ]] || { echo "no checkpoint after step 2" >> "$log"; exit 1; }
+  # Memory measurement of DIRECTIVE-VLM-VAD-PACKFIX-001-004 (run_memmeasure.sh): run1 only.
   [[ "${MEASURE_RUN1_ONLY:-0}" == 1 ]] && { echo "measurement: stop after run1" >> "$log"; exit 0; }
-  echo "stop after step 1; resume" >> "$log"
-  train 2 1 False run2 || exit 1
-  grep -n -i -E "resum|load(ing)? (from )?checkpoint|global_step_1" "$out/console_run2.log" | head -n 20 \
+  echo "stop after step 2; resume" >> "$log"
+  train 3 2 False run2 || exit 1
+  grep -n -i -E "resum|load(ing)? (from )?checkpoint|global_step_2" "$out/console_run2.log" | head -n 20 \
     | sed 's/^/resume evidence: /' >> "$log"
 else
   train 20 10 True full || exit 1

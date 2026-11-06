@@ -41,6 +41,11 @@ memory_summary() {
   echo "steppeak exit $?" >> "$log"
 }
 trap memory_summary EXIT
+# The CUDA checks of hostmem.py (candidates 2, 4, 5, P1 and P2) before the training.
+PYTHONPATH="$root" "$py" scripts/vad_packfix/offload_selftest.py "$out/OFFLOAD_SELFTEST.json" >> "$log" 2>&1
+code=$?
+echo "offload_selftest.py exit $code" >> "$log"
+[[ $code -eq 0 ]] || exit 1
 for arm in F B; do
   start=$(date +%s)
   ARM="$arm" bash scripts/vad_packfix/run_packfix.sh "$out/$arm"

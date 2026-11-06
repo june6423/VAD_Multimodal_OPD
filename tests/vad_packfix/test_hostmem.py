@@ -152,6 +152,9 @@ def test_setup_keeps_the_verl_dispatch_attributes():
     saved.update({(fsdp_workers, name): getattr(fsdp_workers, name) for name in (
         "offload_fsdp_model_to_cpu", "offload_fsdp_optimizer", "load_fsdp_model_to_gpu", "load_fsdp_optimizer")})
     saved[(Tracking, "log")] = Tracking.log
+    from verl.workers.actor.dp_actor import DataParallelPPOActor
+
+    saved[(DataParallelPPOActor, "_optimizer_step")] = DataParallelPPOActor._optimizer_step
     before = getattr(ActorRolloutRefWorker.init_model, MAGIC_ATTR)
     try:
         hostmem.setup()
@@ -162,9 +165,29 @@ def test_setup_keeps_the_verl_dispatch_attributes():
         assert all(getattr(cls, name) is not fn for (cls, name), fn in saved.items())
         assert fsdp_workers.offload_fsdp_model_to_cpu is hostmem.offload_model_pageable
         assert fsdp_workers.offload_fsdp_optimizer is hostmem.offload_optimizer_pageable
+        assert fsdp_workers.load_fsdp_optimizer is hostmem.load_optimizer_deferred
     finally:
         for (cls, name), fn in saved.items():
             setattr(cls, name, fn)
+
+
+def test_deferred_optimizer_load_runs_once_before_the_step(monkeypatch):
+    from verl.workers.actor.dp_actor import DataParallelPPOActor
+
+    calls = []
+    monkeypatch.setattr(DataParallelPPOActor, "_optimizer_step", lambda self: calls.append("step") or 1.0)
+    hostmem._patch_deferred_optimizer_load(lambda optimizer, device_id: calls.append(("load", device_id)))
+    opt = torch.optim.AdamW(torch.nn.Linear(2, 2).parameters())
+    actor = types.SimpleNamespace(actor_optimizer=opt)
+    hostmem.load_optimizer_deferred(optimizer=opt, device_id=3)
+    assert calls == []  # update_actor no longer loads before the forward and backward passes
+    assert DataParallelPPOActor._optimizer_step(actor) == 1.0
+    DataParallelPPOActor._optimizer_step(actor)  # a second mini-batch: the states are already loaded
+    assert calls == [("load", 3), "step", "step"]
+    hostmem.load_optimizer_deferred(optimizer=opt, device_id=3)
+    hostmem.offload_optimizer_pageable(opt)  # an update without a step: the offload clears the pending load
+    DataParallelPPOActor._optimizer_step(actor)
+    assert calls == [("load", 3), "step", "step", "step"]
 
 
 def test_release_reference_removes_only_an_unused_reference():

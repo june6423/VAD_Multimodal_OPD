@@ -26,6 +26,23 @@ while [ "$(date +%s)" -lt "$end" ]; do
     nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader | tr -d '\n'
     echo
     ps -eo rss,pid,comm --sort=-rss | sed -n '2,6p' | awk '{printf "  rss %.1f pid %s %s\n", $1/2^20, $2, $3}'
+    # DT ANSWER on TASK-VLM-VAD-PACKFIX-001-022 item 5: RSS sum (GiB) and process count of each group. An EngineCore
+    # is named by its parent (ray::vLLMHttpSe = rollout, other = judge). RSS counts shared pages in each process.
+    ps -eo rss=,pid=,ppid=,comm= | awk '
+      { rss[$2] = $1; pp[$2] = $3; c[$2] = $4 }
+      END {
+        for (p in c) {
+          g = c[p]
+          if (g == "VLLM::EngineCor") g = "EngineCore(" c[pp[p]] ")"
+          else if (g !~ /^ray::(WorkerDict|vLLMHttpSe|TaskRunner|AgentLoopW)$/) {
+            if (g ~ /^ray::/) g = "ray::other"; else if (g ~ /^(raylet|gcs_server)$/) g = "ray_system"; else g = "other"
+          }
+          s[g] += rss[p]; n[g]++
+        }
+        printf "  groups"
+        for (g in s) printf " %s %.1f/%d", g, s[g] / 2^20, n[g]
+        printf "\n"
+      }'
   } >> "$log" 2>&1
   sleep 5
 done

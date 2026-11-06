@@ -18,6 +18,11 @@ caching host allocator rounds each pinned block up to a power of two):
 5. AdamW states (candidate 4): offload_fsdp_optimizer copies them into pageable CPU memory of the exact size.
 6. Actor flat parameters (candidate 5): offload_fsdp_model_to_cpu copies them into pageable CPU memory of the exact size.
    Items 5 and 6 change only the memory type of a copy. Each offload and load logs its wall time.
+DT ANSWER on TASK-VLM-VAD-PACKFIX-001-022 (CUDA out of memory in the step-2 update; P1 and P2):
+7. AdamW load (P1): update_actor records the load, and the actor loads the states before clip and step. The forward
+   and backward passes then run without the 33.82 GiB of states on the GPU. The values do not change.
+8. Teacher _cpu_grad (P2): after the first teacher forward (the FSDP1 lazy init) the worker frees the pinned _cpu_grad
+   of each teacher handle. The fixed teacher has no backward pass and no optimizer.
 """
 
 import contextvars
@@ -182,6 +187,36 @@ def cast_flat_params(module, dtype=torch.bfloat16):
     return len(handles), before / 2**30, after / 2**30
 
 
+def drop_cpu_grad(module):
+    """P2: free the pinned _cpu_grad of each CPUOffload handle of the fixed teacher. Return the freed GiB.
+
+    FSDP1 allocates _cpu_grad in its lazy init for the backward pass and the optimizer. The fixed teacher has neither.
+    An empty tensor replaces it, so a later gradient path fails with a size error instead of a silent change.
+    """
+    freed, grad = 0, None
+    for h in module._all_handles:
+        grad = getattr(h.flat_param, "_cpu_grad", None)
+        if grad is not None and grad.numel() > 0:
+            freed += grad.numel() * grad.element_size()
+            h.flat_param._cpu_grad = torch.empty(0, dtype=grad.dtype)
+    del grad
+    if torch.cuda.is_available():
+        torch._C._host_emptyCache()  # the caching host allocator keeps freed pinned blocks until this call
+    return freed / 2**30
+
+
+def _drop_teacher_cpu_grad_after_first_forward(teacher):
+    """P2: FSDP1 runs the lazy init in the first forward. A forward hook frees _cpu_grad after it, once."""
+
+    def hook(module, args, output):
+        remove.remove()
+        gib = drop_cpu_grad(module)
+        print(f"VAD_HOSTMEM pid={os.getpid()} teacher cpu_grad freed gib {gib:.2f} {_mem_state('after_free')}",
+              flush=True)
+
+    remove = teacher.register_forward_hook(hook)
+
+
 @torch.no_grad()
 def offload_model_pageable(model, empty_cache: bool = True):
     """Candidate 5: verl offload_fsdp_model_to_cpu (FSDP1) with a blocking copy into pageable memory of the exact size.
@@ -211,9 +246,36 @@ def offload_model_pageable(model, empty_cache: bool = True):
     _log_copy("offload_model", t0, nbytes)
 
 
+def load_optimizer_deferred(optimizer, device_id):
+    """P1: update_actor calls this in place of load_fsdp_optimizer. The load runs in the next _optimizer_step."""
+    optimizer._vad_deferred_load = device_id
+
+
+def _patch_deferred_optimizer_load(load):
+    """P1 (TASK-VLM-VAD-PACKFIX-001-022): the AdamW states stay on the CPU during the forward and backward passes.
+
+    The verl update_actor loads them before update_policy, so they use 33.82 GiB of GPU memory during the forward and
+    backward passes (CUDA out of memory at step 2). Here the actor loads them before clip and step. The values stay.
+    """
+    from verl.workers.actor.dp_actor import DataParallelPPOActor
+
+    orig = DataParallelPPOActor._optimizer_step
+
+    @functools.wraps(orig)
+    def _optimizer_step(self):
+        device_id = getattr(self.actor_optimizer, "_vad_deferred_load", None)
+        if device_id is not None:
+            self.actor_optimizer._vad_deferred_load = None
+            load(optimizer=self.actor_optimizer, device_id=device_id)
+        return orig(self)
+
+    DataParallelPPOActor._optimizer_step = _optimizer_step
+
+
 @torch.no_grad()
 def offload_optimizer_pageable(optimizer):
     """Candidate 4: verl offload_fsdp_optimizer with a blocking copy into pageable memory of the exact size."""
+    optimizer._vad_deferred_load = None  # P1: an update without an optimizer step leaves the states on the CPU
     if not optimizer.state:
         return
     t0 = time.perf_counter()
@@ -285,6 +347,7 @@ def _patch_workerdict(teacher_bf16):
             ctypes.CDLL("libc.so.6").malloc_trim(0)
             print(f"VAD_HOSTMEM pid={os.getpid()} teacher flat params bf16 count {count} gib {before:.2f} -> "
                   f"{after:.2f} {_mem_state('after_cast')}", flush=True)
+            _drop_teacher_cpu_grad_after_first_forward(teacher)
         return result
 
     ActorRolloutRefWorker.init_model = init_model
@@ -292,7 +355,8 @@ def _patch_workerdict(teacher_bf16):
     fsdp_workers.offload_fsdp_model_to_cpu = offload_model_pageable
     fsdp_workers.offload_fsdp_optimizer = offload_optimizer_pageable
     fsdp_workers.load_fsdp_model_to_gpu = _timed_load("load_model", fsdp_workers.load_fsdp_model_to_gpu)
-    fsdp_workers.load_fsdp_optimizer = _timed_load("load_optimizer", fsdp_workers.load_fsdp_optimizer)
+    _patch_deferred_optimizer_load(_timed_load("load_optimizer", fsdp_workers.load_fsdp_optimizer))
+    fsdp_workers.load_fsdp_optimizer = load_optimizer_deferred
 
 
 def setup(teacher_bf16=True):

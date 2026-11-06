@@ -144,13 +144,77 @@ def check_optimizer_round_trip():
     return {"gpu_round_trip": CUDA}
 
 
+def check_deferred_optimizer_load():
+    """P1: with the deferred load, 3 AdamW steps give bit-equal parameters, and the forward and backward passes run
+    with the states on the CPU."""
+    import types
+
+    from verl.utils.fsdp_utils import load_fsdp_optimizer
+    from verl.workers.actor.dp_actor import DataParallelPPOActor
+
+    device_id = DEVICE if CUDA else "cpu"
+    orig = DataParallelPPOActor._optimizer_step
+    try:
+        hostmem._patch_deferred_optimizer_load(load_fsdp_optimizer)
+        results = []
+        for deferred in (False, True):
+            model = _model().to(DEVICE)
+            opt = torch.optim.AdamW(model.parameters(), lr=1e-2)
+            actor = types.SimpleNamespace(config=types.SimpleNamespace(grad_clip=1.0), scaler=None,
+                                          actor_module=model, actor_optimizer=opt)
+            torch.manual_seed(1)
+            for _ in range(3):
+                if deferred:
+                    hostmem.load_optimizer_deferred(optimizer=opt, device_id=device_id)
+                else:
+                    load_fsdp_optimizer(opt, device_id)
+                model(torch.randn(3, 16, device=DEVICE)).square().sum().backward()
+                if deferred and CUDA and opt.state:
+                    assert all(v.device.type == "cpu" for s in opt.state.values() for v in s.values()), "not deferred"
+                if deferred:
+                    DataParallelPPOActor._optimizer_step(actor)
+                else:
+                    orig(actor)
+                if CUDA and opt.state:
+                    assert all(v.device.type == "cuda" for s in opt.state.values() for k, v in s.items()
+                               if k != "step")
+                opt.zero_grad()
+                hostmem.offload_optimizer_pageable(opt)
+                assert getattr(opt, "_vad_deferred_load", None) is None
+            results.append([p.detach().clone() for p in model.parameters()])
+        assert all(torch.equal(a, b) for a, b in zip(*results)), "deferred load changed the parameters"
+    finally:
+        DataParallelPPOActor._optimizer_step = orig
+    return {"steps": 3, "gpu": CUDA}
+
+
+@torch.no_grad()
+def check_drop_teacher_cpu_grad():
+    """P2: after the first forward the teacher handles hold an empty _cpu_grad, and the outputs stay bit-equal."""
+    x = torch.randn(5, 16, device=DEVICE)
+    plain = _fsdp(_model(), CUDA).eval()
+    teacher = _fsdp(_model(), CUDA).eval()
+    hostmem.cast_flat_params(teacher)
+    hostmem._drop_teacher_cpu_grad_after_first_forward(teacher)
+    first = teacher(x)
+    grads = [getattr(p, "_cpu_grad", None) for p in _flat_params(teacher)]
+    if CUDA:  # CPUOffload (pinned memory) needs CUDA
+        assert all(g is not None and g.numel() == 0 and g.dtype == torch.bfloat16 for g in grads), grads
+    assert not teacher._forward_hooks, "the hook must remove itself"
+    second, ref = teacher(x), plain(x)
+    assert torch.equal(first, second) and torch.equal(first, ref)
+    return {"cpu_offload": CUDA}
+
+
 CHECKS = [("cast_forward_no_offload", lambda: check_cast_forward(False))]
 if CUDA:
     CHECKS.append(("cast_forward_cpu_offload", lambda: check_cast_forward(True)))
 CHECKS += [("cast_releases_fp32_storage", check_cast_releases_fp32_storage),
            ("cast_refuses_after_lazy_init", check_cast_refuses_after_lazy_init),
            ("model_round_trip", check_model_round_trip),
-           ("optimizer_round_trip", check_optimizer_round_trip)]
+           ("optimizer_round_trip", check_optimizer_round_trip),
+           ("deferred_optimizer_load", check_deferred_optimizer_load),
+           ("drop_teacher_cpu_grad", check_drop_teacher_cpu_grad)]
 
 
 def main(dest):
