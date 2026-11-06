@@ -10,6 +10,14 @@ The fix changes no value that training reads. TASK-VLM-VAD-PACKFIX-001-011 measu
 3. Reference model: the WorkerDict builds the reference model only because the fixed teacher is built in the same
    code branch. With actor.use_kl_loss False and a separate teacher, no computation reads it (use_kl_in_reward is
    False in A1). After init_model the worker removes it (16.91 GiB). A later reference call raises an error.
+DIRECTIVE-VLM-VAD-PACKFIX-001-005 (TASK-VLM-VAD-PACKFIX-001-018: pinned host memory counts as container shmem, and the
+caching host allocator rounds each pinned block up to a power of two):
+4. Teacher (candidate 2): after init_model the worker casts the CPU flat parameters of the fixed teacher (FSDP1,
+   CPUOffload, param_dtype bf16) to bf16, before the FSDP lazy init. The buffers stay. FSDP1 then copies the bf16 shard
+   to the GPU in place of the fp32 shard that it cast to bf16 on the GPU (expected bit-equal: teacher_check.py).
+5. AdamW states (candidate 4): offload_fsdp_optimizer copies them into pageable CPU memory of the exact size.
+6. Actor flat parameters (candidate 5): offload_fsdp_model_to_cpu copies them into pageable CPU memory of the exact size.
+   Items 5 and 6 change only the memory type of a copy. Each offload and load logs its wall time.
 """
 
 import contextvars
@@ -17,6 +25,7 @@ import ctypes
 import functools
 import gc
 import os
+import time
 import weakref
 
 import torch
@@ -149,7 +158,98 @@ def release_reference(worker):
     return log
 
 
-def _patch_workerdict():
+@torch.no_grad()
+def cast_flat_params(module, dtype=torch.bfloat16):
+    """Candidate 2: cast the flat parameters of an FSDP1 module before its lazy init. Return (count, GiB before, after).
+
+    The module attributes of the original parameters are views into the flat parameter. The handle sets them again,
+    so the old storage is free at once. Buffers are not flat parameters and keep their dtype.
+    """
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    if module._is_root is not None:
+        raise RuntimeError("VAD_HOSTMEM: cast_flat_params needs an FSDP module before its lazy init")
+    handles = [m._handle for m in module.modules() if isinstance(m, FSDP) and m._handle is not None]
+    before = after = 0
+    for h in handles:
+        if h._use_orig_params or h.uses_sharded_strategy:
+            raise RuntimeError("VAD_HOSTMEM: cast_flat_params supports use_orig_params=False and NO_SHARD only")
+        fp = h.flat_param
+        before += fp.numel() * fp.element_size()
+        fp.data = fp.data.to(dtype)
+        h._use_unsharded_views(as_params=False)
+        after += fp.numel() * fp.element_size()
+    return len(handles), before / 2**30, after / 2**30
+
+
+@torch.no_grad()
+def offload_model_pageable(model, empty_cache: bool = True):
+    """Candidate 5: verl offload_fsdp_model_to_cpu (FSDP1) with a blocking copy into pageable memory of the exact size.
+
+    The verl copy uses non_blocking=True, which allocates a pinned block of the next power-of-two size.
+    """
+    from torch.distributed.fsdp._runtime_utils import _lazy_init
+
+    t0 = time.perf_counter()
+    _lazy_init(model, model)
+    assert model._is_root, "Only support root model offloading to CPU"
+    nbytes = 0
+    for handle in model._all_handles:
+        if handle._offload_params:
+            continue
+        flat_param = handle.flat_param
+        assert (
+            flat_param.data.data_ptr() == flat_param._local_shard.data_ptr()
+            and id(flat_param.data) != id(flat_param._local_shard)
+            and flat_param.data.size() == flat_param._local_shard.size()
+        )
+        handle.flat_param_to(torch.device("cpu"), non_blocking=False)
+        flat_param._local_shard = flat_param.data
+        nbytes += flat_param.numel() * flat_param.element_size()
+    if empty_cache and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    _log_copy("offload_model", t0, nbytes)
+
+
+@torch.no_grad()
+def offload_optimizer_pageable(optimizer):
+    """Candidate 4: verl offload_fsdp_optimizer with a blocking copy into pageable memory of the exact size."""
+    if not optimizer.state:
+        return
+    t0 = time.perf_counter()
+    nbytes = 0
+    for param_group in optimizer.param_groups:
+        for param in param_group["params"]:
+            state = optimizer.state[param]
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to("cpu", non_blocking=False)
+                    nbytes += value.numel() * value.element_size()
+    _log_copy("offload_optimizer", t0, nbytes)
+
+
+def _log_copy(name, t0, nbytes=None):
+    size = "" if nbytes is None else f" gib {nbytes / 2**30:.2f}"
+    print(f"VAD_HOSTMEM pid={os.getpid()} copy {name} seconds {time.perf_counter() - t0:.2f}{size}", flush=True)
+
+
+def _timed_load(name, fn):
+    """Log the wall time of a verl load (asynchronous copies: the wrapper waits for the GPU at the end)."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        t0 = time.perf_counter()
+        result = fn(*args, **kwargs)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        _log_copy(name, t0)
+        return result
+
+    return wrapper
+
+
+def _patch_workerdict(teacher_bf16):
+    from verl.workers import fsdp_workers
     from verl.workers.fsdp_workers import ActorRolloutRefWorker
 
     orig = ActorRolloutRefWorker.init_model
@@ -160,12 +260,23 @@ def _patch_workerdict():
         log = release_reference(self)
         for line in log or []:
             print(f"VAD_HOSTMEM pid={os.getpid()} reference model removed {line}", flush=True)
+        teacher = getattr(self, "teacher_module_fsdp", None)
+        if teacher_bf16 and teacher is not None:
+            count, before, after = cast_flat_params(teacher)
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+            print(f"VAD_HOSTMEM pid={os.getpid()} teacher flat params bf16 count {count} gib {before:.2f} -> "
+                  f"{after:.2f} {_mem_state('after_cast')}", flush=True)
         return result
 
     ActorRolloutRefWorker.init_model = init_model
+    # fsdp_workers imported these helpers by name: replace the names that ActorRolloutRefWorker calls.
+    fsdp_workers.offload_fsdp_model_to_cpu = offload_model_pageable
+    fsdp_workers.offload_fsdp_optimizer = offload_optimizer_pageable
+    fsdp_workers.load_fsdp_model_to_gpu = _timed_load("load_model", fsdp_workers.load_fsdp_model_to_gpu)
+    fsdp_workers.load_fsdp_optimizer = _timed_load("load_optimizer", fsdp_workers.load_fsdp_optimizer)
 
 
-def setup():
-    _patch_workerdict()
+def setup(teacher_bf16=True):
+    _patch_workerdict(teacher_bf16)
     _patch_agent_loop()
     print(f"VAD_HOSTMEM hook installed pid={os.getpid()}", flush=True)
