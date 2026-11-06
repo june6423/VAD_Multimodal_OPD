@@ -155,6 +155,9 @@ def test_setup_keeps_the_verl_dispatch_attributes():
     from verl.workers.actor.dp_actor import DataParallelPPOActor
 
     saved[(DataParallelPPOActor, "_optimizer_step")] = DataParallelPPOActor._optimizer_step
+    from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+
+    saved[(RayPPOTrainer, "_log_rollout_data")] = RayPPOTrainer._log_rollout_data
     before = getattr(ActorRolloutRefWorker.init_model, MAGIC_ATTR)
     try:
         hostmem.setup()
@@ -169,6 +172,28 @@ def test_setup_keeps_the_verl_dispatch_attributes():
     finally:
         for (cls, name), fn in saved.items():
             setattr(cls, name, fn)
+
+
+def test_rollout_dump_gets_the_reward_inputs_and_the_caller_dict_keeps_its_keys(monkeypatch, tmp_path):
+    from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+
+    seen = {}
+
+    def orig(self, batch, reward_extra_infos_dict, timing_raw, rollout_data_dir):
+        seen.update(reward_extra_infos_dict)
+        reward_extra_infos_dict.setdefault("request_id", ["r0", "r1"])  # as the verl original does
+
+    monkeypatch.setattr(RayPPOTrainer, "_log_rollout_data", orig)
+    hostmem._patch_rollout_dump()
+    batch = types.SimpleNamespace(non_tensor_batch={
+        "data_source": np.array(["zwz", "zwz"], dtype=object),
+        "extra_info": np.array([{"question": "q0", "answer": "D", "evidence_views": {"x": 1}}, None], dtype=object)})
+    caller = {"acc": [1.0, 0.0]}
+    RayPPOTrainer._log_rollout_data(None, batch, caller, {}, str(tmp_path))
+    assert seen["data_source"] == ["zwz", "zwz"]
+    assert seen["extra_info"] == [{"question": "q0"}, {}]
+    assert seen["acc"] == [1.0, 0.0]
+    assert caller == {"acc": [1.0, 0.0], "request_id": ["r0", "r1"]}  # no dump-only key in the caller dict
 
 
 def test_deferred_optimizer_load_runs_once_before_the_step(monkeypatch):

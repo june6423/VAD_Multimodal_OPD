@@ -1,6 +1,7 @@
 #!/bin/bash
-# Entry point of the pilot task and the FULL task of VLM-VAD-PACKFIX-001 (HANDOFF-VLM-VAD-PACKFIX-001-R2, Part B
-# items 2 and 4): run_packfix.sh for arm F into <out>/F, then for arm B into <out>/B, then stats.py.
+# Entry point of the pilot task and the FULL task of VLM-VAD-PACKFIX-001 (HANDOFF-VLM-VAD-PACKFIX-001-R6, Part B
+# items 2 and 4): run_packfix.sh for arm F into <out>/F, then for arm B into <out>/B, then stats.py. Each arm trains
+# without the judge and then runs its judge session (DIRECTIVE-VLM-VAD-PACKFIX-001-007).
 # PILOT=1 adds projection.py (PROJECTION.json) and the end cleanup (the pilot checkpoints are removed after the
 # checks). The FULL task keeps the checkpoints of steps 10 and 20 on b200. Both write STEPPEAK.json (steppeak.py).
 # A restarted task skips a finished arm (TRAIN_DONE) and resumes an unfinished arm from its last checkpoint.
@@ -48,7 +49,11 @@ echo "offload_selftest.py exit $code" >> "$log"
 [[ $code -eq 0 ]] || exit 1
 for arm in F B; do
   start=$(date +%s)
-  ARM="$arm" bash scripts/vad_packfix/run_packfix.sh "$out/$arm"
+  # DIRECTIVE-VLM-VAD-PACKFIX-001-007 action 4: the step-0 model is equal in both arms. Arm F validates it once and
+  # arm B copies that dump.
+  step0=""
+  [[ "$arm" == B ]] && step0="$out/F/validation/0.jsonl"
+  ARM="$arm" VAL_STEP0_FROM="$step0" bash scripts/vad_packfix/run_packfix.sh "$out/$arm"
   code=$?
   echo "arm $arm exit $code wall_seconds $(( $(date +%s) - start )) at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
   [[ $code -eq 0 ]] || exit 1

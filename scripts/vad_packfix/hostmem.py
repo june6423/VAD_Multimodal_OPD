@@ -23,6 +23,9 @@ DT ANSWER on TASK-VLM-VAD-PACKFIX-001-022 (CUDA out of memory in the step-2 upda
    and backward passes then run without the 33.82 GiB of states on the GPU. The values do not change.
 8. Teacher _cpu_grad (P2): after the first teacher forward (the FSDP1 lazy init) the worker frees the pinned _cpu_grad
    of each teacher handle. The fixed teacher has no backward pass and no optimizer.
+HANDOFF-VLM-VAD-PACKFIX-001-R6 Definition 8 (logging only):
+9. Rollout dumps: each row also gets data_source and the extra_info fields that the A1 reward function reads, so that
+   rollout_acc.py can score the dumps after the training.
 """
 
 import contextvars
@@ -314,6 +317,46 @@ def _patch_tracking():
     Tracking.log = log
 
 
+ROLLOUT_EXTRA_KEYS = ("benchmark", "query", "question")
+
+
+def rollout_dump_fields(non_tensor_batch):
+    """The reward-function inputs that the rollout dump lacks (HANDOFF-VLM-VAD-PACKFIX-001-R6 Definition 8).
+
+    judge_batched reads data_source and extra_info benchmark, query and question. The dump holds the response and the
+    ground truth. Logging only.
+    """
+    n = len(non_tensor_batch["data_source"])
+    extras = non_tensor_batch.get("extra_info", [{}] * n)
+    return {
+        "data_source": [str(x) for x in non_tensor_batch["data_source"]],
+        "extra_info": [{k: str(e[k]) for k in ROLLOUT_EXTRA_KEYS if k in (e or {})} for e in extras],
+    }
+
+
+def _patch_rollout_dump():
+    """Add data_source and the extra_info fields of rollout_dump_fields to each rollout dump row. Logging only.
+
+    The wrapper gives the dump a copy of reward_extra_infos_dict with the two fields. A key that the original adds to
+    its argument (request_id) goes back to the caller dict, as before.
+    """
+    from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+
+    orig = RayPPOTrainer._log_rollout_data
+
+    @functools.wraps(orig)
+    def _log_rollout_data(self, batch, reward_extra_infos_dict, timing_raw, rollout_data_dir):
+        added = rollout_dump_fields(batch.non_tensor_batch)
+        proxy = {**reward_extra_infos_dict, **added}
+        result = orig(self, batch, proxy, timing_raw, rollout_data_dir)
+        for key, value in proxy.items():
+            if key not in reward_extra_infos_dict and key not in added:
+                reward_extra_infos_dict[key] = value
+        return result
+
+    RayPPOTrainer._log_rollout_data = _log_rollout_data
+
+
 def _timed_load(name, fn):
     """Log the wall time of a verl load (asynchronous copies: the wrapper waits for the GPU at the end)."""
 
@@ -363,4 +406,5 @@ def setup(teacher_bf16=True):
     _patch_workerdict(teacher_bf16)
     _patch_agent_loop()
     _patch_tracking()
+    _patch_rollout_dump()
     print(f"VAD_HOSTMEM hook installed pid={os.getpid()}", flush=True)

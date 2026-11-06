@@ -3,8 +3,9 @@
 Sources, in this order for each metric:
 1. metrics_<run>_<start>.jsonl of the verl file logger ({"step": s, "data": {...}}), one file for each run.
 2. console.log lines "step:<s> - key:value - ..." (numbers only, as in train_arm.sh).
-The mean training reward is critic/score/mean when a source has it, else the mean "score" of rollouts/<s>.jsonl
-(trainer.rollout_data_dir). STEP_METRICS.json records the source of each value.
+The rollout accuracy (HANDOFF-VLM-VAD-PACKFIX-001-R6 Definition 8) is acc_mean of the step in ROLLOUT_ACC.json
+(rollout_acc.py, the judge session after the training). The A1 training reward is zero, so the trainer metrics and the
+"score" of the rollout dumps do not hold it. STEP_METRICS.json records the source of each value.
 The check fails (exit 1) when a step in 1..<steps> lacks a metric or a value is not finite.
 Usage: python metrics.py <arm output root> <steps>
 """
@@ -24,7 +25,6 @@ KEYS = {
     "actor/vopd_loss": ["actor/vopd_loss"],
     "timing_s/step": ["timing_s/step"],
 }
-REWARD = "critic/score/mean"
 OPTIONAL = ("timing_s/testing", "timing_s/save_checkpoint", "timing_s/gen", "timing_s/update_actor")
 
 
@@ -68,17 +68,15 @@ def console(path: Path) -> dict:
     return steps
 
 
-def rollout_reward(out: Path, step: int):
-    path = out / "rollouts" / f"{step}.jsonl"
-    if not path.exists():
-        return None, 0
-    scores = [float(json.loads(line)["score"]) for line in path.open() if line.strip()]
-    return (sum(scores) / len(scores) if scores else None), len(scores)
+def rollout_acc(out: Path) -> dict:
+    path = out / "ROLLOUT_ACC.json"
+    return json.loads(path.read_text())["steps"] if path.exists() else {}
 
 
 def main():
     out, n_steps = Path(sys.argv[1]), int(sys.argv[2])
     sources = {"file": file_logger(out), "console": console(out / "console.log")}
+    acc = rollout_acc(out)
     result, missing, nonfinite = {}, [], []
     for step in range(1, n_steps + 1):
         row = {}
@@ -96,16 +94,11 @@ def main():
                 if name in sources[src].get(step, {}):
                     row[name] = {"value": sources[src][step][name], "source": src}
                     break
-        for src in ("file", "console"):
-            if REWARD in sources[src].get(step, {}):
-                row["reward_mean"] = {"value": sources[src][step][REWARD], "source": f"{src}:{REWARD}"}
-                break
+        a = acc.get(str(step), {})
+        if a.get("acc_mean") is None:
+            missing.append([step, "rollout_acc"])
         else:
-            value, count = rollout_reward(out, step)
-            if value is None:
-                missing.append([step, "reward_mean"])
-            else:
-                row["reward_mean"] = {"value": value, "source": f"rollouts/{step}.jsonl score", "rows": count}
+            row["rollout_acc"] = {"value": a["acc_mean"], "source": "ROLLOUT_ACC.json", "rows": a["rows"]}
         for name, v in row.items():
             if not math.isfinite(v["value"]):
                 nonfinite.append([step, name])

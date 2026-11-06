@@ -5,8 +5,10 @@ Reads <root>/memwatch.log (one file for the task) and, for each arm directory F 
 time of each train run) and console_<run>.log (the hostmem.py lines "step_log step <s> utc <t>" and
 "copy <name> seconds <x> ... utc <t>").
 A step window starts at the run start or at the previous step_log line of the same run, and ends at its step_log
-line. Step 0 is the validation before training (with the model init). The window of step s holds the generation,
-the update, the checkpoint save and the validation of step s. For each window: the memwatch sample with the
+line. The window of step s holds the generation, the update and the checkpoint save of step s (the window of the
+first step of a run also holds the model init). DIRECTIVE-VLM-VAD-PACKFIX-001-007: each fast validation runs in its own
+process ("== validate <tag>: ... start" in RUN_PACKFIX.txt). Its window (run <tag>, the step of the validated model)
+holds the model init, the checkpoint load and the validation. For each window: the memwatch sample with the
 largest ctr_cur (ctr_cur, ctr_anon, ctr_shmem, ctr_file, ctr_kernel), ctr_oom_kill at the first and last sample,
 the wall seconds, and the count and sum of seconds of each copy name. Times are UTC HH:MM:SS of one day.
 DT ANSWER on TASK-VLM-VAD-PACKFIX-001-022: each window also gives the sample with the largest ctr_anon + ctr_shmem
@@ -21,10 +23,10 @@ from pathlib import Path
 
 from scripts.vad_packfix.mempeak import parse
 
-RUN_START = re.compile(r"== train (\w+): .* start \d{4}-\d\d-\d\dT(\d\d:\d\d:\d\d)Z")
+RUN_START = re.compile(r"== (?:train|validate) (\w+): .* start \d{4}-\d\d-\d\dT(\d\d:\d\d:\d\d)Z")
 STEP_LOG = re.compile(r"VAD_HOSTMEM pid=\d+ step_log step (\d+) utc (\d\d:\d\d:\d\d)")
 COPY = re.compile(r"VAD_HOSTMEM pid=\d+ copy (\w+) seconds ([0-9.]+).* utc (\d\d:\d\d:\d\d)")
-RUN_END = re.compile(r"train (\w+) exit [1-9]\d* wall_seconds (\d+)")  # failed runs only
+RUN_END = re.compile(r"(?:train|validate) (\w+) exit [1-9]\d* wall_seconds (\d+)")  # failed runs only
 RESUME = re.compile(r"Resuming from \S*global_step_(\d+)")
 KEYS = ("ctr_cur", "ctr_anon", "ctr_shmem", "ctr_file", "ctr_kernel")
 

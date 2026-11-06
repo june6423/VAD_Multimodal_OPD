@@ -63,3 +63,26 @@ def test_steppeak_gives_the_anon_shmem_peak_and_the_window_of_a_failed_step(tmp_
     assert (failed["step"], failed["complete"], failed["start"], failed["end"]) == (4, False, "10:00:25", "10:00:50")
     assert (failed["samples"], failed["anon_shmem"]) == (1, 128.0)
     assert (result["max_ctr_cur"], result["max_anon_shmem"]) == (140.0, 128.0)
+
+
+def test_steppeak_gives_a_window_to_each_validation_run(tmp_path):
+    # DIRECTIVE-VLM-VAD-PACKFIX-001-007: each fast validation runs in its own val_only process after the training.
+    (tmp_path / "memwatch.log").write_text(
+        _sample("10:00:00", 5.0, 4.0, 1.0, 11) + _sample("11:00:10", 70.0, 50.0, 2.0, 11)
+        + _sample("11:00:30", 60.0, 40.0, 2.0, 11))
+    arm = tmp_path / "F"
+    arm.mkdir()
+    (arm / "RUN_PACKFIX.txt").write_text(
+        "== train run2: total 3 save 2 val_before_train False test_freq -1 metrics m start 2026-11-07T10:00:00Z\n"
+        "train run2 exit 0 wall_seconds 100 latest 3\n"
+        "== validate val3: step 3 trainer.resume_mode=resume_path ++trainer.resume_from_path=x start "
+        "2026-11-07T11:00:00Z\n"
+        "validate val3 exit 0 wall_seconds 40 dump x\n")
+    (arm / "console_run2.log").write_text("(TaskRunner pid=8) VAD_HOSTMEM pid=8 step_log step 3 utc 10:01:00\n")
+    (arm / "console_val3.log").write_text(
+        "(TaskRunner pid=9) Resuming from /o/checkpoints/global_step_3\n"
+        "(TaskRunner pid=9) VAD_HOSTMEM pid=9 step_log step 3 utc 11:00:40\n")
+    assert steppeak.main(str(tmp_path), str(tmp_path / "S.json")) == 0
+    rows = json.loads((tmp_path / "S.json").read_text())["rows"]
+    assert [(r["run"], r["step"], r["complete"]) for r in rows] == [("run2", 3, True), ("val3", 3, True)]
+    assert (rows[1]["start"], rows[1]["end"], rows[1]["anon_shmem"]) == ("11:00:00", "11:00:40", 52.0)

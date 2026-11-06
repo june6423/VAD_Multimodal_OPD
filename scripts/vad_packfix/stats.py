@@ -6,9 +6,9 @@ scripts/vad_packfix/sources/A1_STEP_METRICS_1_20.json.
 2. For each arm: the fast-validation accuracy of each validated step with the row count; F minus B; a paired sign
    test over the rows of the step (rows joined by the row key of val_acc.py): n_F = rows with acc_F > acc_B,
    n_B = rows with acc_F < acc_B, two-sided exact binomial p with probability 0.5 over n_F + n_B rows.
-3. For each arm: the mean training reward over steps 1-10 and over steps 11-20 (the steps that exist), with the
-   source of each step value.
-4. Arm B next to A1 for each metric and step (descriptive). A1 has no reward and no entropy.
+3. For each arm: the mean rollout accuracy (HANDOFF-VLM-VAD-PACKFIX-001-R6 Definition 8) over steps 1-10 and over
+   steps 11-20 (the steps that exist), with the source of each step value.
+4. Arm B next to A1 for each metric and step (descriptive). A1 has no rollout accuracy and no entropy.
 Usage: python stats.py <F dir> <B dir> <A1 reference json> <out json>
 """
 
@@ -17,7 +17,7 @@ import math
 import sys
 from pathlib import Path
 
-METRICS = ["rollout_corr/kl", "reward_mean", "response_length/mean", "actor/grad_norm", "actor/entropy",
+METRICS = ["rollout_corr/kl", "rollout_acc","response_length/mean", "actor/grad_norm", "actor/entropy",
            "actor/pg_loss", "actor/vopd_loss"]
 
 
@@ -62,23 +62,20 @@ def main():
             "paired_rows": len(common), "n_F_better": n_f, "n_B_better": n_b, "sign_test_p": sign_test(n_f, n_b),
         }
 
-    reward = {}
+    rollout_acc = {}
     for a in ("F", "B"):
-        reward[a] = {}
+        rollout_acc[a] = {}
         for name, lo, hi in (("steps_1_10", 1, 10), ("steps_11_20", 11, 20)):
-            vals = [(s, sm[a][str(s)]["reward_mean"]) for s in range(lo, hi + 1)
-                    if "reward_mean" in sm[a].get(str(s), {})]
-            reward[a][name] = {"mean": sum(v["value"] for _, v in vals) / len(vals) if vals else None,
-                               "steps": [s for s, _ in vals],
-                               "sources": sorted({v["source"].split(" ")[0].split(":")[0].split("/")[0] for _, v in vals})}
+            vals = [(s, sm[a][str(s)]["rollout_acc"]) for s in range(lo, hi + 1)
+                    if "rollout_acc" in sm[a].get(str(s), {})]
+            rollout_acc[a][name] = {"mean": sum(v["value"] for _, v in vals) / len(vals) if vals else None,
+                                    "steps": [s for s, _ in vals], "sources": sorted({v["source"] for _, v in vals})}
 
-    a1_key = {"reward_mean": "critic/score/mean"}
     b_vs_a1 = {}
     for s in steps:
-        b_vs_a1[str(s)] = {m: {"B": per_step[str(s)][m]["B"], "A1": a1.get(str(s), {}).get(a1_key.get(m, m))}
-                           for m in METRICS}
+        b_vs_a1[str(s)] = {m: {"B": per_step[str(s)][m]["B"], "A1": a1.get(str(s), {}).get(m)} for m in METRICS}
 
-    res = {"steps": steps, "per_step": per_step, "validation": validation, "reward_means": reward,
+    res = {"steps": steps, "per_step": per_step, "validation": validation, "rollout_acc_means": rollout_acc,
            "arm_B_vs_A1": b_vs_a1, "a1_reference": str(a1_path)}
     out.write_text(json.dumps(res, indent=1, sort_keys=True))
     print(json.dumps({"steps": steps, "validation": {s: (v["F"]["acc"], v["B"]["acc"], v["sign_test_p"])
