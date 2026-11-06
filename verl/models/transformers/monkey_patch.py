@@ -461,6 +461,7 @@ def apply_monkey_patch(
             Qwen3_5Model.forward = qwen3_5_base_forward
             Qwen3_5ForConditionalGeneration.forward = forward_with_normal_backend
             Qwen3_5VisionModel.fast_pos_embed_interpolate = fast_pos_embed_interpolate
+            print(f"VAD_PACKFIX={os.environ.get('VAD_PACKFIX', '<unset>')} pid={os.getpid()}")
             if os.environ.get("VAD_PACKFIX") == "1":
                 from verl.models.transformers.qwen3_5_packfix import apply_packfix
 
