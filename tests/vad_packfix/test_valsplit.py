@@ -52,13 +52,14 @@ def test_concat_refuses_a_short_part_dump(tmp_path):
 
 
 def test_valtrim_trims_after_each_call_only_with_the_flag(monkeypatch):
-    from verl.experimental.agent_loop.agent_loop import AgentLoopWorker
+    from verl.experimental.agent_loop.agent_loop import AgentLoopManager, AgentLoopWorker
 
     async def orig(self, batch):
         return ("out", len(batch))
 
     calls = []
     monkeypatch.setattr(AgentLoopWorker, "generate_sequences", orig)
+    monkeypatch.setattr(AgentLoopManager, "generate_sequences", AgentLoopManager.generate_sequences)
     monkeypatch.setattr(valtrim.hostmem, "setup", lambda: calls.append("hostmem"))
     monkeypatch.setattr(valtrim, "trim", lambda: calls.append("trim"))
     monkeypatch.delenv("VAD_VALTRIM", raising=False)

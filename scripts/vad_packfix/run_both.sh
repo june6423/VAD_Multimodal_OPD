@@ -36,7 +36,11 @@ if [[ -f "$out/memwatch.log" ]]; then
   mv "$out/memwatch.log" "$prev"
   echo "earlier memwatch.log renamed to $prev sha256 $(sha256sum "$prev" | cut -d' ' -f1)" >> "$log"
 fi
-bash scripts/vad_packfix/memwatch.sh "$out/memwatch.log" 400000 &
+# DIRECTIVE-VLM-VAD-PACKFIX-001-009 actions 4 and 5: run_packfix.sh reads the container cgroup (valguard.sh) and
+# creates the flag file MEMWATCH_FAST_FLAG for each val_only process (memwatch interval 1 s).
+export VAD_CONTAINER_CGROUP="$cg" MEMWATCH_FAST_FLAG="$out/MEMWATCH_FAST"
+rm -f "$MEMWATCH_FAST_FLAG"
+bash scripts/vad_packfix/memwatch.sh "$out/memwatch.log" 400000 "$MEMWATCH_FAST_FLAG" &
 watch_pid=$!
 memory_summary() {
   sleep 10  # memwatch takes the samples after the end

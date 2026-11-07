@@ -27,6 +27,11 @@
 #         val_concat.py joins the 4 dumps in the original row order. The step-0 validation is always full-set (also
 #         in the pilot). The val_only processes load the Ray hook valtrim.setup with VAD_VALTRIM=1: hostmem.setup
 #         plus gc.collect and malloc_trim after each generate_sequences call (option A). The training is unchanged.
+#         DIRECTIVE-VLM-VAD-PACKFIX-001-009 (TASK-027: host out of memory in part 2, then a 7.5 h wait): each val_only
+#         process uses data.val_batch_size VAL_BATCH_SIZE (default 32, the training batch does not change), runs
+#         under valguard.sh (3 h wall-time limit, exit 125 when a Ray worker dies or the container oom_kill count
+#         rises), and creates MEMWATCH_FAST_FLAG while it runs (memwatch interval 1 s). val_batches.py logs the row
+#         range and the image pixels of each validation batch (VAL_BATCHES.json).
 #      b. rollout_acc.py: the rollout accuracy of each step (R6 Definition 8) from the rollout dumps.
 #      The judge stops before this script ends, so it is not on the GPU during the training of the next arm.
 #   7. Host memory below the container limit of b200: the Ray worker hook scripts/vad_packfix/hostmem.py (R6
@@ -46,6 +51,7 @@ pilot="${PILOT:-0}"
 b200="${B200_ROOT:?}" env_root="${ENV_ROOT:?}"
 judge_util="${JUDGE_GPU_UTIL:-0.30}" rollout_util="${ROLLOUT_GPU_UTIL:-0.40}"
 step0_from="${VAL_STEP0_FROM:-}"
+val_bs="${VAL_BATCH_SIZE:-32}" val_limit=10800
 case "$arm" in F) flag=1 ;; B) flag=0 ;; *) echo "ARM must be F or B" >&2; exit 2 ;; esac
 data="$b200/harness/data"
 py="$env_root/vad/bin/python"
@@ -56,6 +62,7 @@ export PYTHONDONTWRITEBYTECODE=1
 {
   echo "== date $(date -u +%Y-%m-%dT%H:%M:%SZ) git HEAD $(git -c safe.directory="$root" rev-parse HEAD) ARM $arm VAD_PACKFIX $flag PILOT $pilot"
   echo "judge_gpu_util $judge_util rollout_gpu_util $rollout_util actor optimizer_offload False (training) True (validation)"
+  echo "validation: val_batch_size $val_bs wall limit $val_limit s for each val_only process"
   nvidia-smi --query-gpu=index,uuid,memory.used,memory.total --format=csv
   df -B1 "$out"
 } >> "$log" 2>&1
@@ -99,6 +106,12 @@ if [[ "$pilot" == 1 ]]; then
 else
   val_file="$data/vad/benchmarks/opd_fast_benchmarks.parquet"
 fi
+# The full-set split (val_split.py) and its batch table (val_batches.py) before the training, so that a data error
+# stops the arm at once.
+split_dir="$out/val_split"
+[[ -f "$split_dir/VAL_SPLIT.json" ]] || "$py" scripts/vad_packfix/val_split.py \
+  "$data/vad/benchmarks/opd_fast_benchmarks.parquet" "$split_dir" 4 >> "$log" 2>&1 || exit 1
+"$py" scripts/vad_packfix/val_batches.py "$split_dir" "$val_bs" "$split_dir/VAL_BATCHES.json" >> "$log" 2>&1 || exit 1
 
 export PATH="$env_root/vad/bin:$PATH"
 unset ROLLOUT_N
@@ -157,7 +170,6 @@ for c in "${common[@]}"; do
     *) val_common+=("$c") ;;
   esac
 done
-split_dir="$out/val_split"
 
 # validate <tag> <step> <val parquet> <dump dir>: the fast validation of one model in a val_only process (step 0:
 # initial weights). The dump is <dump dir>/<step>.jsonl.
@@ -169,15 +181,18 @@ validate() {
   else
     resume=(trainer.resume_mode=resume_path "++trainer.resume_from_path=$out/checkpoints/global_step_$step")
   fi
-  echo "== validate $tag: step $step ${resume[*]} start $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
+  echo "== validate $tag: step $step ${resume[*]} val_batch_size $val_bs start $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
+  [[ -n "${MEMWATCH_FAST_FLAG:-}" ]] && touch "$MEMWATCH_FAST_FLAG"
   VERL_FILE_LOGGER_PATH="$out/val_${tag}_$start.jsonl" TOTAL_TRAINING_STEPS="$steps" TRAINER_SAVE_FREQ="$steps" \
-    ACTOR_OPTIMIZER_OFFLOAD=True BENCHMARK_EVAL_FILE="$file" \
+    ACTOR_OPTIMIZER_OFFLOAD=True BENCHMARK_EVAL_FILE="$file" BENCHMARK_EVAL_BATCH_SIZE="$val_bs" \
+    bash scripts/vad_packfix/valguard.sh "$val_limit" "$out/console_$tag.log" "${VAD_CONTAINER_CGROUP:?}" \
     bash scripts/train_vad.sh --profile 4b -- "${val_common[@]}" "++trainer.validation_data_dir=$vdir" \
     "++ray_kwargs.ray_init.runtime_env.env_vars.VAD_VALTRIM='1'" \
     "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_PATH='$out/val_${tag}_$start.jsonl'" \
     trainer.val_before_train=True ++trainer.val_only=True trainer.test_freq=-1 "${resume[@]}" \
     > "$out/console_$tag.log" 2>&1
   code=$?
+  [[ -n "${MEMWATCH_FAST_FLAG:-}" ]] && rm -f "$MEMWATCH_FAST_FLAG"
   echo "validate $tag exit $code wall_seconds $(( $(date +%s) - start )) dump $(ls "$vdir/$step.jsonl" 2>/dev/null || echo none)" >> "$log"
   [[ $code -eq 0 && -f "$vdir/$step.jsonl" ]]
 }
@@ -250,8 +265,6 @@ echo "judge ready $ready port $port at $(date -u +%Y-%m-%dT%H:%M:%SZ) judge_star
 export BENCHMARK_EVAL_JUDGE_API_BASE="http://127.0.0.1:$port/v1"
 
 mkdir -p "$out/validation"
-[[ -f "$split_dir/VAL_SPLIT.json" ]] || "$py" scripts/vad_packfix/val_split.py \
-  "$data/vad/benchmarks/opd_fast_benchmarks.parquet" "$split_dir" 4 >> "$log" 2>&1 || exit 1
 if [[ -n "$step0_from" ]]; then
   cp -f "$step0_from" "$out/validation/0.jsonl" || exit 1
   echo "step 0 validation copied from $step0_from sha256 $(sha256sum "$out/validation/0.jsonl" | cut -d' ' -f1) (the step-0 model is equal in both arms)" >> "$log"

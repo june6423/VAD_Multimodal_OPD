@@ -6,9 +6,12 @@
 # utilization, and the 5 processes with the largest RSS (GiB).
 # The container cgroup is the nearest ancestor of this process cgroup with a memory.max limit (TASK-017: the
 # docker scope, 150 GiB). /sys/fs/cgroup/memory.stat is the cgroup root, not the container.
-# Usage: bash memwatch.sh <log file> <seconds>
+# DIRECTIVE-VLM-VAD-PACKFIX-001-009 action 5: while the file <fast flag> exists (run_packfix.sh creates it for each
+# val_only process), the interval is 1 s in place of 5 s.
+# Usage: bash memwatch.sh <log file> <seconds> [fast flag]
 log="$1"
 end=$(( $(date +%s) + $2 ))
+fast="${3:-}"
 cg="/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)"
 while [[ "$cg" != /sys/fs/cgroup && ( ! -r "$cg/memory.max" || "$(cat "$cg/memory.max")" == max ) ]]; do
   cg="$(dirname "$cg")"
@@ -44,5 +47,5 @@ while [ "$(date +%s)" -lt "$end" ]; do
         printf "\n"
       }'
   } >> "$log" 2>&1
-  sleep 5
+  if [[ -n "$fast" && -e "$fast" ]]; then sleep 1; else sleep 5; fi
 done

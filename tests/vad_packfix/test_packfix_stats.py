@@ -102,12 +102,12 @@ def test_projection(tmp_path):
     res = json.loads((tmp_path / "P.json").read_text())
     p, b = res["arms"]["F"], res["arms"]["B"]
     # startup = 1000 - 100 - 100 = 800. Full validation = 300 + 310 + 320 + 330 = 1260.
-    # F: 800 + 20 x 100 + 80 + 3 x 1260 + 20 x 42 = 7500. B (no step-0 validation): 7500 - 1260 = 6240.
+    # F: 800 + 20 x 100 + 80 + 3 x 1260 + 20 x 42 = 7500. B: also 3 validations (DIRECTIVE-009 action 10), 7500.
     assert math.isclose(p["startup_s"], 800.0) and math.isclose(p["judge_start_s"], 80.0)
     assert math.isclose(res["val_full"]["full_s"], 1260.0) and res["val_full"]["rows"] == 2
     assert p["ran_val0"] and not b["ran_val0"]
     assert math.isclose(p["rollout_score_step_s"], 42.0) and p["judge_calls_per_step"] == 3
-    assert math.isclose(p["total_h"], 7500 / 3600) and math.isclose(b["total_h"], 6240 / 3600)
+    assert math.isclose(p["total_h"], 7500 / 3600) and math.isclose(b["total_h"], 7500 / 3600)
     # The step-0 dump must have the full validation rows.
     assert run("projection.py", tmp_path, 2636, tmp_path / "P2.json").returncode != 0
 

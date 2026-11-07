@@ -10,7 +10,8 @@ rollout scoring of the arm. For each arm:
   validation of the full set = the measured wall seconds of the pilot step-0 validation of arm F: the sum of its 4
     val_only processes val0_p0 .. val0_p3 on all rows (DIRECTIVE-VLM-VAD-PACKFIX-001-008, pilot item 1). The
     checkpoint validations of the FULL task use the same split, so each gets this time,
-  validations = the step-0 validation (only the arm that ran it) + 2 checkpoint validations (steps 10 and 20),
+  validations = 3 full-set validations for each arm (steps 0, 10 and 20; DIRECTIVE-VLM-VAD-PACKFIX-001-009 action
+    10, also for the arm that copies the step-0 dump),
   rollout scoring = the largest "seconds" of ROLLOUT_ACC.json.
 Writes PROJECTION.json with the parts, each arm total, the sum and the 80 h limit. The check fails when the step-0
 dump of arm F does not have the full validation rows.
@@ -46,7 +47,7 @@ def arm(d: Path, val_full: dict) -> dict:
     judge_start = max(float(x) for x in re.findall(r"judge_start_seconds (\d+)", log))
     ran_val0 = VAL0_PART.search(log) is not None
     score = max(v["seconds"] for v in ra.values())
-    validations = (1 + 2 if ran_val0 else 2) * val_full["full_s"]
+    validations = 3 * val_full["full_s"]
     total = startup + 20 * step + judge_start + validations + 20 * score
     return {"startup_s": startup, "step_s": step, "judge_start_s": judge_start, "ran_val0": ran_val0,
             "validations_s": validations, "rollout_score_step_s": score,
