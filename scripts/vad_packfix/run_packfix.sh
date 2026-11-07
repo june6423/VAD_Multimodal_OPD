@@ -22,6 +22,11 @@
 #         optimizer is not used). Pilot: 20 rows (val_subset.py).
 #         The step-0 model is equal in both arms: with VAL_STEP0_FROM=<file> the arm copies that step-0 dump and
 #         does not validate step 0 again.
+#         DIRECTIVE-VLM-VAD-PACKFIX-001-008 (TASK-026: host out of memory in a full-set validation): a full-set
+#         validation runs in 4 val_only processes on the fixed contiguous row split of val_split.py (option B), and
+#         val_concat.py joins the 4 dumps in the original row order. The step-0 validation is always full-set (also
+#         in the pilot). The val_only processes load the Ray hook valtrim.setup with VAD_VALTRIM=1: hostmem.setup
+#         plus gc.collect and malloc_trim after each generate_sequences call (option A). The training is unchanged.
 #      b. rollout_acc.py: the rollout accuracy of each step (R6 Definition 8) from the rollout dumps.
 #      The judge stops before this script ends, so it is not on the GPU during the training of the next arm.
 #   7. Host memory below the container limit of b200: the Ray worker hook scripts/vad_packfix/hostmem.py (R6
@@ -143,9 +148,21 @@ train() {
   return "$code"
 }
 
-# validate <tag> <step>: the fast validation of one model in a val_only process (step 0: initial weights).
+# The val_only processes: common without the validation dump directory, and with the hook valtrim.setup.
+val_common=()
+for c in "${common[@]}"; do
+  case "$c" in
+    ++trainer.validation_data_dir=*) ;;
+    *=scripts.vad_packfix.hostmem.setup) val_common+=("${c%hostmem.setup}valtrim.setup") ;;
+    *) val_common+=("$c") ;;
+  esac
+done
+split_dir="$out/val_split"
+
+# validate <tag> <step> <val parquet> <dump dir>: the fast validation of one model in a val_only process (step 0:
+# initial weights). The dump is <dump dir>/<step>.jsonl.
 validate() {
-  local tag="$1" step="$2" start code resume
+  local tag="$1" step="$2" file="$3" vdir="$4" start code resume
   start=$(date +%s)
   if [[ "$step" == 0 ]]; then
     resume=(trainer.resume_mode=disable)
@@ -154,14 +171,27 @@ validate() {
   fi
   echo "== validate $tag: step $step ${resume[*]} start $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
   VERL_FILE_LOGGER_PATH="$out/val_${tag}_$start.jsonl" TOTAL_TRAINING_STEPS="$steps" TRAINER_SAVE_FREQ="$steps" \
-    ACTOR_OPTIMIZER_OFFLOAD=True \
-    bash scripts/train_vad.sh --profile 4b -- "${common[@]}" \
+    ACTOR_OPTIMIZER_OFFLOAD=True BENCHMARK_EVAL_FILE="$file" \
+    bash scripts/train_vad.sh --profile 4b -- "${val_common[@]}" "++trainer.validation_data_dir=$vdir" \
+    "++ray_kwargs.ray_init.runtime_env.env_vars.VAD_VALTRIM='1'" \
     "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_PATH='$out/val_${tag}_$start.jsonl'" \
     trainer.val_before_train=True ++trainer.val_only=True trainer.test_freq=-1 "${resume[@]}" \
     > "$out/console_$tag.log" 2>&1
   code=$?
-  echo "validate $tag exit $code wall_seconds $(( $(date +%s) - start )) dump $(ls "$out/validation/$step.jsonl" 2>/dev/null || echo none)" >> "$log"
-  [[ $code -eq 0 && -f "$out/validation/$step.jsonl" ]]
+  echo "validate $tag exit $code wall_seconds $(( $(date +%s) - start )) dump $(ls "$vdir/$step.jsonl" 2>/dev/null || echo none)" >> "$log"
+  [[ $code -eq 0 && -f "$vdir/$step.jsonl" ]]
+}
+
+# validate_full <tag> <step>: the full set in 4 val_only processes (tags <tag>_p0 .. _p3), then one dump.
+validate_full() {
+  local tag="$1" step="$2" k parts=()
+  for k in 0 1 2 3; do
+    parts+=("$out/validation_parts/$step/$k/$step.jsonl")
+    [[ -f "${parts[$k]}" ]] || validate "${tag}_p$k" "$step" "$split_dir/part_$k.parquet" \
+      "$out/validation_parts/$step/$k" || return 1
+  done
+  "$py" scripts/vad_packfix/val_concat.py "$split_dir/VAL_SPLIT.json" "$out/validation/$step.jsonl" "${parts[@]}" \
+    >> "$log" 2>&1
 }
 
 # Training (no judge on the GPU). The endpoint check of train_vad.sh needs a judge model list: judge_stub.py (CPU)
@@ -220,14 +250,21 @@ echo "judge ready $ready port $port at $(date -u +%Y-%m-%dT%H:%M:%SZ) judge_star
 export BENCHMARK_EVAL_JUDGE_API_BASE="http://127.0.0.1:$port/v1"
 
 mkdir -p "$out/validation"
+[[ -f "$split_dir/VAL_SPLIT.json" ]] || "$py" scripts/vad_packfix/val_split.py \
+  "$data/vad/benchmarks/opd_fast_benchmarks.parquet" "$split_dir" 4 >> "$log" 2>&1 || exit 1
 if [[ -n "$step0_from" ]]; then
   cp -f "$step0_from" "$out/validation/0.jsonl" || exit 1
   echo "step 0 validation copied from $step0_from sha256 $(sha256sum "$out/validation/0.jsonl" | cut -d' ' -f1) (the step-0 model is equal in both arms)" >> "$log"
 elif [[ ! -f "$out/validation/0.jsonl" ]]; then
-  validate val0 0 || exit 1
+  validate_full val0 0 || exit 1
 fi
 for k in "${ckpt_steps[@]}"; do
-  [[ -f "$out/validation/$k.jsonl" ]] || validate "val$k" "$k" || exit 1
+  [[ -f "$out/validation/$k.jsonl" ]] && continue
+  if [[ "$pilot" == 1 ]]; then
+    validate "val$k" "$k" "$val_file" "$out/validation" || exit 1
+  else
+    validate_full "val$k" "$k" || exit 1
+  fi
 done
 echo "== score rollouts: start $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
 PYTHONPATH="$root" "$py" scripts/vad_packfix/rollout_acc.py "$out" "$steps" "$BENCHMARK_EVAL_JUDGE_API_BASE" \

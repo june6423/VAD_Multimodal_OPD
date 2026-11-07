@@ -25,10 +25,17 @@ while [[ "$cg" != /sys/fs/cgroup && ( ! -r "$cg/memory.max" || "$(cat "$cg/memor
 done
 oom_kill() { awk '$1=="oom_kill"{print $2}' "$cg/memory.events"; }
 echo "container cgroup $cg memory.max $(cat "$cg/memory.max") oom_kill before $(oom_kill)" >> "$log"
-orphans=$(ps -eo pid,ppid,args | awk '$2==1 && $3 ~ /^ray::/' | wc -l)
-echo "orphan ray processes before the run: $orphans" >> "$log"
-[[ "$orphans" -eq 0 ]] || { ps -eo pid,ppid,etime,rss,args | awk '$2==1 && $5 ~ /^ray::/' >> "$log"; exit 1; }
+# DIRECTIVE-VLM-VAD-PACKFIX-001-008: the check also counts orphan vLLM processes (TASK-026 left a VLLM::EngineCore).
+orphans=$(ps -eo pid,ppid,args | awk '$2==1 && $3 ~ /^(ray|VLLM)::/' | wc -l)
+echo "orphan ray and vllm processes before the run: $orphans" >> "$log"
+[[ "$orphans" -eq 0 ]] || { ps -eo pid,ppid,etime,rss,args | awk '$2==1 && $5 ~ /^(ray|VLLM)::/' >> "$log"; exit 1; }
 # Host memory against the container limit (DIRECTIVE-VLM-VAD-PACKFIX-001-003): memwatch.sh for the whole task.
+# memwatch.log has times of day without a date, so a restarted task first renames the log of the earlier run.
+if [[ -f "$out/memwatch.log" ]]; then
+  prev="$out/memwatch_before_$(date -u +%Y%m%dT%H%M%SZ).log"
+  mv "$out/memwatch.log" "$prev"
+  echo "earlier memwatch.log renamed to $prev sha256 $(sha256sum "$prev" | cut -d' ' -f1)" >> "$log"
+fi
 bash scripts/vad_packfix/memwatch.sh "$out/memwatch.log" 400000 &
 watch_pid=$!
 memory_summary() {
@@ -36,7 +43,7 @@ memory_summary() {
   kill "$watch_pid" 2>/dev/null
   {
     echo "oom_kill after $(oom_kill)"
-    echo "orphan ray processes after the run: $(ps -eo pid,ppid,args | awk '$2==1 && $3 ~ /^ray::/' | wc -l)"
+    echo "orphan ray and vllm processes after the run: $(ps -eo pid,ppid,args | awk '$2==1 && $3 ~ /^(ray|VLLM)::/' | wc -l)"
   } >> "$log"
   PYTHONPATH="$root" "$py" scripts/vad_packfix/steppeak.py "$out" "$out/STEPPEAK.json" >> "$log" 2>&1
   echo "steppeak exit $?" >> "$log"

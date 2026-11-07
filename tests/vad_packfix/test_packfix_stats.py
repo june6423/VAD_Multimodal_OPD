@@ -94,17 +94,22 @@ def test_projection(tmp_path):
         write_arm(tmp_path / arm, kl=0.1, accs=[1, 0])
         assert run("metrics.py", tmp_path / arm, 2).returncode == 0
         assert run("val_acc.py", tmp_path / arm).returncode == 0
-    r = run("projection.py", tmp_path, 20, tmp_path / "P.json")
+    # Arm F validated step 0 on all rows in 4 processes. Arm B copied that dump.
+    with (tmp_path / "F" / "RUN_PACKFIX.txt").open("a") as f:
+        f.writelines(f"validate val0_p{k} exit 0 wall_seconds {300 + 10 * k} dump x\n" for k in range(4))
+    r = run("projection.py", tmp_path, 2, tmp_path / "P.json")
     assert r.returncode == 0, r.stderr
-    p = json.loads((tmp_path / "P.json").read_text())["arms"]["F"]
-    # startup = 1000 - 100 - 100 = 800. Scale = 20 / 2 = 10.
-    # val0: part 10:05:10 -> 10:06:50 = 100, full = 400 - 100 + 1000 = 1300.
-    # val2: part 11:06:00 -> 11:08:00 = 120, full = 500 - 120 + 1200 = 1580.
-    # total = 800 + 20 x 100 + 80 + (1300 + 2 x 1580) + 20 x 42 = 8180.
+    res = json.loads((tmp_path / "P.json").read_text())
+    p, b = res["arms"]["F"], res["arms"]["B"]
+    # startup = 1000 - 100 - 100 = 800. Full validation = 300 + 310 + 320 + 330 = 1260.
+    # F: 800 + 20 x 100 + 80 + 3 x 1260 + 20 x 42 = 7500. B (no step-0 validation): 7500 - 1260 = 6240.
     assert math.isclose(p["startup_s"], 800.0) and math.isclose(p["judge_start_s"], 80.0)
-    assert math.isclose(p["val0"]["full_s"], 1300.0) and math.isclose(p["val_checkpoint"]["full_s"], 1580.0)
+    assert math.isclose(res["val_full"]["full_s"], 1260.0) and res["val_full"]["rows"] == 2
+    assert p["ran_val0"] and not b["ran_val0"]
     assert math.isclose(p["rollout_score_step_s"], 42.0) and p["judge_calls_per_step"] == 3
-    assert math.isclose(p["total_h"], 8180 / 3600)
+    assert math.isclose(p["total_h"], 7500 / 3600) and math.isclose(b["total_h"], 6240 / 3600)
+    # The step-0 dump must have the full validation rows.
+    assert run("projection.py", tmp_path, 2636, tmp_path / "P2.json").returncode != 0
 
 
 def test_rollout_acc_scores_each_step_once_with_the_reward_inputs(tmp_path):

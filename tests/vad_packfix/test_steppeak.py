@@ -86,3 +86,22 @@ def test_steppeak_gives_a_window_to_each_validation_run(tmp_path):
     rows = json.loads((tmp_path / "S.json").read_text())["rows"]
     assert [(r["run"], r["step"], r["complete"]) for r in rows] == [("run2", 3, True), ("val3", 3, True)]
     assert (rows[1]["start"], rows[1]["end"], rows[1]["anon_shmem"]) == ("11:00:00", "11:00:40", 52.0)
+
+
+def test_steppeak_skips_the_runs_before_a_restart(tmp_path):
+    # DIRECTIVE-VLM-VAD-PACKFIX-001-008: a recovery task appends to RUN_PACKFIX.txt, and its memwatch.log holds only
+    # the new run. The training of the earlier day (same clock times) must not get the new samples.
+    (tmp_path / "memwatch.log").write_text(_sample("10:00:30", 140.0, 120.0, 10.0, 0))
+    arm = tmp_path / "F"
+    arm.mkdir()
+    (arm / "RUN_PACKFIX.txt").write_text(
+        "== date 2026-11-07T00:00:00Z git HEAD a ARM F\n"
+        "== train full: total 20 save 10 metrics m start 2026-11-07T10:00:00Z\n"
+        "== date 2026-11-08T09:00:00Z git HEAD b ARM F\n"
+        "== validate val0_p0: step 0 trainer.resume_mode=disable start 2026-11-08T10:00:00Z\n"
+        "validate val0_p0 exit 0 wall_seconds 60 dump x\n")
+    (arm / "console_full.log").write_text("(TaskRunner pid=8) VAD_HOSTMEM pid=8 step_log step 1 utc 10:00:50\n")
+    (arm / "console_val0_p0.log").write_text("(TaskRunner pid=9) VAD_HOSTMEM pid=9 step_log step 0 utc 10:00:50\n")
+    assert steppeak.main(str(tmp_path), str(tmp_path / "S.json")) == 0
+    rows = json.loads((tmp_path / "S.json").read_text())["rows"]
+    assert [(r["run"], r["step"], r["anon_shmem"]) for r in rows] == [("val0_p0", 0, 130.0)]

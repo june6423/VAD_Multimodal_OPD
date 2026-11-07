@@ -95,6 +95,9 @@ def main(root, dest):
         if not run_log.exists():
             continue
         text = run_log.read_text()
+        # A restarted task appends to RUN_PACKFIX.txt, and memwatch.log holds only this run (run_both.sh renames
+        # the earlier log). The runs before the last "== date" header of run_packfix.sh are not in this memwatch.log.
+        text = text[max(0, text.rfind("== date")):]
         ends = {m.group(1): int(m.group(2)) for m in RUN_END.finditer(text)}
         for m in RUN_START.finditer(text):
             console = root / arm / f"console_{m.group(1)}.log"
