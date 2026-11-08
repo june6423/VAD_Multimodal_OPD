@@ -4,12 +4,15 @@ Reads only <F>/STEP_METRICS.json, <B>/STEP_METRICS.json, <F>/VAL_ACC.json, <B>/V
 scripts/vad_packfix/sources/A1_STEP_METRICS_1_20.json.
 1. For each step and arm: each metric of Definition 7 with its source, and F minus B.
 2. For each arm: the fast-validation accuracy of each validated step with the row count; F minus B; a paired sign
-   test over the rows of the step (rows joined by the row key of val_acc.py): n_F = rows with acc_F > acc_B,
-   n_B = rows with acc_F < acc_B, two-sided exact binomial p with probability 0.5 over n_F + n_B rows.
+   test over the rows of the step: n_F = rows with acc_F > acc_B, n_B = rows with acc_F < acc_B, two-sided exact
+   binomial p with probability 0.5 over n_F + n_B rows. The rows are paired by position in the dump order
+   (DIRECTIVE-VLM-VAD-PACKFIX-001-010): the row key of val_acc.py (sha256 of input and gts) is not unique. The script
+   stops with an error when a step does not have <rows> rows in each arm, or when the row keys (input or gts) of the
+   arms differ at a position. duplicate_row_keys = rows minus the count of distinct row keys of arm F.
 3. For each arm: the mean rollout accuracy (HANDOFF-VLM-VAD-PACKFIX-001-R6 Definition 8) over steps 1-10 and over
    steps 11-20 (the steps that exist), with the source of each step value.
 4. Arm B next to A1 for each metric and step (descriptive). A1 has no rollout accuracy and no entropy.
-Usage: python stats.py <F dir> <B dir> <A1 reference json> <out json>
+Usage: python stats.py <F dir> <B dir> <A1 reference json> <out json> [rows, default 2636]
 """
 
 import json
@@ -32,6 +35,7 @@ def sign_test(n_f: int, n_b: int):
 
 def main():
     f_dir, b_dir, a1_path, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+    n_rows = int(sys.argv[5]) if len(sys.argv) > 5 else 2636
     sm = {a: json.loads((d / "STEP_METRICS.json").read_text())["steps"] for a, d in (("F", f_dir), ("B", b_dir))}
     va = {a: json.loads((d / "VAL_ACC.json").read_text())["steps"] for a, d in (("F", f_dir), ("B", b_dir))}
     a1 = json.loads(a1_path.read_text())["steps"]
@@ -50,16 +54,22 @@ def main():
     validation = {}
     for s in sorted(set(va["F"]) & set(va["B"]), key=int):
         vf, vb = va["F"][s], va["B"][s]
-        f_rows = dict(zip(vf["row_key"], vf["row_acc"]))
-        b_rows = dict(zip(vb["row_key"], vb["row_acc"]))
-        common = [k for k in f_rows if k in b_rows]
-        n_f = sum(f_rows[k] > b_rows[k] for k in common)
-        n_b = sum(f_rows[k] < b_rows[k] for k in common)
+        for arm, v in (("F", vf), ("B", vb)):
+            if not v["rows"] == len(v["row_acc"]) == len(v["row_key"]) == n_rows:
+                sys.exit(f"step {s} arm {arm}: rows {v['rows']}, row_acc {len(v['row_acc'])}, "
+                         f"row_key {len(v['row_key'])}, expected {n_rows}")
+        bad = [i for i, (kf, kb) in enumerate(zip(vf["row_key"], vb["row_key"])) if kf != kb]
+        if bad:
+            sys.exit(f"step {s}: input or gts differ between the arms at positions {bad}")
+        pairs = list(zip(vf["row_acc"], vb["row_acc"]))
+        n_f = sum(f > b for f, b in pairs)
+        n_b = sum(f < b for f, b in pairs)
         validation[s] = {
             "F": {"acc": vf["acc_mean"], "rows": vf["rows"], "by_benchmark": vf["by_benchmark"]},
             "B": {"acc": vb["acc_mean"], "rows": vb["rows"], "by_benchmark": vb["by_benchmark"]},
             "F_minus_B_points": 100 * (vf["acc_mean"] - vb["acc_mean"]),
-            "paired_rows": len(common), "n_F_better": n_f, "n_B_better": n_b, "sign_test_p": sign_test(n_f, n_b),
+            "paired_rows": len(pairs), "duplicate_row_keys": n_rows - len(set(vf["row_key"])),
+            "position_mismatches": len(bad), "n_F_better": n_f, "n_B_better": n_b, "sign_test_p": sign_test(n_f, n_b),
         }
 
     rollout_acc = {}

@@ -17,7 +17,7 @@ def run(script, *args):
     return subprocess.run([sys.executable, str(SCRIPTS / script), *map(str, args)], capture_output=True, text=True)
 
 
-def write_arm(d: Path, kl: float, accs: list[int], steps: int = 2, rollout_acc_steps=None):
+def write_arm(d: Path, kl: float, accs: list[int], steps: int = 2, rollout_acc_steps=None, inputs=None):
     d.mkdir(parents=True)
     # Two file-logger runs: run1 has step 1, run2 has steps 1 (repeated, later wins) and 2.
     base = {"actor/grad_norm": 1.0, "actor/entropy": 0.5, "actor/pg_loss": 0.01, "actor/vopd_loss": 0.01,
@@ -31,8 +31,9 @@ def write_arm(d: Path, kl: float, accs: list[int], steps: int = 2, rollout_acc_s
     (d / "ROLLOUT_ACC.json").write_text(json.dumps({"steps": {
         str(s): {"rows": 4, "acc_mean": 0.5, "judge_calls": 3, "seconds": 40.0 + s} for s in acc_steps}}))
     (d / "validation").mkdir()
+    inputs = inputs or [f"q{i}" for i in range(len(accs))]
     for s in (0, steps):
-        rows = [{"input": f"q{i}", "gts": "A", "score": float(a), "acc": float(a), "judge_source": "rule",
+        rows = [{"input": inputs[i], "gts": "A", "score": float(a), "acc": float(a), "judge_source": "rule",
                  "benchmark": "vstar"} for i, a in enumerate(accs)]
         (d / "validation" / f"{s}.jsonl").write_text("\n".join(map(json.dumps, rows)) + "\n")
     (d / "RUN_PACKFIX.txt").write_text(
@@ -74,19 +75,55 @@ def test_val_acc_and_stats(tmp_path):
         assert run("val_acc.py", tmp_path / arm).returncode == 0
     a1 = tmp_path / "a1.json"
     a1.write_text(json.dumps({"steps": {"1": {"rollout_corr/kl": 0.14}}}))
-    r = run("stats.py", tmp_path / "F", tmp_path / "B", a1, tmp_path / "S.json")
+    r = run("stats.py", tmp_path / "F", tmp_path / "B", a1, tmp_path / "S.json", 6)
     assert r.returncode == 0, r.stderr
     s = json.loads((tmp_path / "S.json").read_text())
     assert math.isclose(s["per_step"]["1"]["rollout_corr/kl"]["F_minus_B"], -0.1)
     assert s["per_step"]["1"]["rollout_acc"]["F_minus_B"] == 0.0
     v = s["validation"]["2"]
     assert (v["n_F_better"], v["n_B_better"], v["paired_rows"]) == (3, 0, 6)
+    assert (v["duplicate_row_keys"], v["position_mismatches"]) == (0, 0)
     assert math.isclose(v["sign_test_p"], 0.25)  # 2 x (1/2)^3
     assert math.isclose(v["F_minus_B_points"], 100 * (5 / 6 - 2 / 6))
     assert s["rollout_acc_means"]["F"]["steps_1_10"] == {"mean": 0.5, "steps": [1, 2], "sources": ["ROLLOUT_ACC.json"]}
     assert s["rollout_acc_means"]["F"]["steps_11_20"]["mean"] is None
     assert s["arm_B_vs_A1"]["1"]["rollout_corr/kl"] == {"B": 1.2, "A1": 0.14}
     assert s["arm_B_vs_A1"]["1"]["rollout_acc"] == {"B": 0.5, "A1": None}
+
+
+def stats_of(tmp_path, f_accs, b_accs, f_inputs, b_inputs, rows):
+    a1 = tmp_path / "a1.json"
+    a1.write_text(json.dumps({"steps": {}}))
+    for arm, accs, inputs in (("F", f_accs, f_inputs), ("B", b_accs, b_inputs)):
+        write_arm(tmp_path / arm, kl=0.1, accs=accs, inputs=inputs)
+        assert run("metrics.py", tmp_path / arm, 2).returncode == 0
+        assert run("val_acc.py", tmp_path / arm).returncode == 0
+    return run("stats.py", tmp_path / "F", tmp_path / "B", a1, tmp_path / "S.json", rows)
+
+
+def test_stats_pairs_rows_with_duplicate_keys_by_position(tmp_path):
+    # Rows 0 and 1 have one key (input "q", gts "A") and different accuracy (DIRECTIVE-VLM-VAD-PACKFIX-001-010).
+    # By position: row 0 F > B, row 1 F < B, rows 2 and 3 equal. A dict by key keeps only row 1 of each arm.
+    r = stats_of(tmp_path, [1, 0, 1, 0], [0, 1, 1, 0], ["q", "q", "r", "s"], ["q", "q", "r", "s"], 4)
+    assert r.returncode == 0, r.stderr
+    v = json.loads((tmp_path / "S.json").read_text())["validation"]["2"]
+    assert (v["paired_rows"], v["n_F_better"], v["n_B_better"]) == (4, 1, 1)
+    assert (v["duplicate_row_keys"], v["position_mismatches"]) == (1, 0)
+    assert math.isclose(v["sign_test_p"], 1.0)
+
+
+def test_stats_stops_on_an_input_or_gts_mismatch_at_a_position(tmp_path):
+    r = stats_of(tmp_path, [1, 0, 1], [1, 0, 1], ["a", "b", "c"], ["a", "c", "b"], 3)
+    assert r.returncode != 0
+    assert "positions [1, 2]" in r.stderr
+    assert not (tmp_path / "S.json").exists()
+
+
+def test_stats_stops_on_a_row_count_other_than_the_expected_count(tmp_path):
+    r = stats_of(tmp_path, [1, 0, 1], [1, 0, 1], None, None, 4)
+    assert r.returncode != 0
+    assert "rows 3" in r.stderr
+    assert not (tmp_path / "S.json").exists()
 
 
 def test_projection(tmp_path):
