@@ -402,3 +402,21 @@ def test_gram_matrices(tmp_path, monkeypatch, block):
     removed = json.loads((out / "VECTORS_REMOVED.json").read_text())
     assert sorted(removed["removed"]) == sorted(f"{k}.pt" for k in names)
     assert (out / "GRAM_A1_80.sha256").read_text().split()[0] == grads.sha256_file(out / "GRAM_A1_80.json")
+
+
+def test_diag_partsum_on_the_toy(setup):
+    """DIRECTIVE-003 diagnostic: on the toy forward, the replay and the masked parts sum to the total."""
+    diag = load("vad_grad3_diag_partsum", DIR / "diag_partsum.py")
+    rows, data = toy_rows()
+    recs = row_file(rows, "B8-f1")
+    diag.MIN_ROWS = 2  # the toy micro-batches hold at most 2 rows
+    mrows = diag.pick_micro(recs)
+    assert len(mrows) == 2 and {r["label"] for r in mrows} == {0, 1}
+    ctx = ToyCtx(make_actor(setup), data)
+    res = diag.diagnose(ctx, mrows, {r["traj"]: {"traj": r["traj"]} for r in recs})
+    assert abs(res["replay_loss_sum"] - res["loss"]) < 1e-6 * abs(res["loss"])
+    for key in ("C+I", "L1+L2+L3"):
+        assert res["coverage"][key]["rows_in_no_class"] == 0 and res["coverage"][key]["rows_in_more_than_one"] == 0
+        for method in ("replay", "masked"):
+            assert res["partitions"][key][method]["loss_rel_diff"] < 1e-6, (key, method)
+            assert res["partitions"][key][method]["grad_rel_diff"] < 1e-6, (key, method)
