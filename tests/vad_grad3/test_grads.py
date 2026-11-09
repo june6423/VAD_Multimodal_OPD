@@ -234,6 +234,16 @@ def test_parts_sum_to_the_total_and_equal_masked_losses(setup, tmp_path):
     assert prog["rounding_rel"] == res["rounding_rel"] and prog["part_sum_rel"] == res["part_sum_rel"]
     assert all(m["seconds_rounding"] >= 0 for m in prog["micro"])
     assert not list((tmp_path / "vectors").glob("*total_x3*"))
+    # R3 Part A item 3: coverage, loss check and part_sum_bound for each split.
+    n2 = prog["sq_norm"]
+    for split, group in (("C+I", ("C", "I")), ("L1+L2+L3", ("L1", "L2", "L3"))):
+        c = res["part_checks"][split]
+        assert c["coverage"] == {"rows_in_no_part": 0, "rows_in_more_than_one": 0}
+        assert c["loss_rel_diff"] < 1e-6
+        want = 2 * res["rounding_rel"] * math.sqrt((sum(n2[p] for p in group) + n2["total"]) / (2 * n2["total"]))
+        assert c["part_sum_bound"] == pytest.approx(want, rel=1e-12)
+        assert c["pass"] == (c["part_sum_rel"] <= c["part_sum_bound"])
+    assert prog["part_checks"] == res["part_checks"]
     total = vec(tmp_path, "B8-f1", "total")
     assert torch.allclose(vec(tmp_path, "B8-f1", "C") + vec(tmp_path, "B8-f1", "I"), total, rtol=1e-5, atol=1e-8)
     ob = obj.Objectives(actor, list(actor.actor_module.parameters()))
@@ -261,6 +271,19 @@ def test_parts_sum_to_the_total_and_equal_masked_losses(setup, tmp_path):
         assert torch.allclose(vec(tmp_path, "B8-f1", part), want, rtol=1e-5, atol=1e-8), part
     lines = [json.loads(x) for x in open(tmp_path / "GRADROWS_O__B8-f1.jsonl")]
     assert len(lines) == N_ROWS and all(x["l_row"] is not None for x in lines)
+
+
+def test_part_checks_find_coverage_and_loss_faults():
+    rows = [{"label": 1, "len_bin": "L1"}, {"label": 0, "len_bin": "L4"}]
+    progress = {"sq_norm": {"total": 4.0, "C": 1.0, "I": 1.0, "L1": 1.0, "L2": 0.0, "L3": 0.0}, "rounding_rel": 0.01,
+                "part_sum_rel": {"C+I": 0.01, "L1+L2+L3": 0.5},
+                "micro": [{"scale": 0.5, "loss": 2.0, "part_losses": {"C": 1.0, "I": 1.0, "L1": 1.5}}]}
+    c = grads.part_checks(rows, progress, ["total", "C", "I", "L1", "L2", "L3"])
+    assert c["C+I"]["coverage"] == {"rows_in_no_part": 0, "rows_in_more_than_one": 0}
+    assert c["C+I"]["loss_rel_diff"] == 0.0 and c["C+I"]["part_sum_bound"] == pytest.approx(0.02 * math.sqrt(6 / 8))
+    assert c["C+I"]["pass"] is True
+    assert c["L1+L2+L3"]["coverage"]["rows_in_no_part"] == 1 and c["L1+L2+L3"]["loss_rel_diff"] == 0.25
+    assert c["L1+L2+L3"]["pass"] is False
 
 
 def test_b1_and_other_keys_have_their_parts(setup, tmp_path):

@@ -255,6 +255,7 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
         del grads
         t4 = time.time()
         parts = [n for n in names[1:] if members(n, mrows)]
+        part_losses = {}
         for j, n in enumerate(parts):
             # Definition 9.1: the O4 loss of the same packed forward outputs with the response mask of the rows
             # outside part n set to 0, times T_n / T_m (token mean) and B_m / mini.
@@ -264,19 +265,23 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
                 if i not in idx:
                     mask[i] = 0
             mmi = {**mi, "response_mask": mask}
-            target = rep.o4(mmi, student, minus_d, plus_d) * (float(loss_tokens(mmi).sum()) / t_m * scale)
+            lx = rep.o4(mmi, student, minus_d, plus_d) * (float(loss_tokens(mmi).sum()) / t_m)
+            part_losses[n] = float(lx.detach())
+            target = lx * scale
             grads = torch.autograd.grad(target, ctx.params, retain_graph=j < len(parts) - 1)
             acc.add(n, grads, 1.0 / RANKS)
-            del grads, target, mmi
+            del grads, target, mmi, lx
         t5 = time.time()
-        recs = [{**r, "l_row": rec_l[i], "O4_micro": float(loss.detach()), "scale": scale} for i, r in enumerate(mrows)]
+        loss_m = float(loss.detach())
+        recs = [{**r, "l_row": rec_l[i], "O4_micro": loss_m, "scale": scale} for i, r in enumerate(mrows)]
         del loss, student, minus, plus, mi, rows_mi
         if need_parts:
             del l_rows
         acc.done.append(list(k))
         progress["rows"] += recs
         progress["micro"].append({"key": list(k), "rows": len(mrows), "tokens": sum(r["total_tokens"] for r in mrows),
-                                  "check_abs": check, "seconds_inputs": round(t1 - t0, 3),
+                                  "check_abs": check, "scale": scale, "loss": loss_m, "part_losses": part_losses,
+                                  "seconds_inputs": round(t1 - t0, 3),
                                   "seconds_forward": round(t2 - t1, 3),
                                   "seconds_backward": round(t3 - t2 + t5 - t4, 3), "seconds_rounding": round(t4 - t3, 3)})
         write_json(prog_path, progress)
@@ -297,8 +302,9 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
         os.replace(tmp, vec_dir / f"{tag}__{n}.pt")
     progress["sq_norm"] = norms
     progress["committed"] = [list(k) for k in acc.done]
-    progress["part_sum_rel"] = part_sum_check(acc, names) if len(names) > 1 else None
     progress["rounding_rel"] = rel_to_total(acc, (X3,))
+    progress["part_sum_rel"] = part_sum_check(acc, names) if len(names) > 1 else None
+    progress["part_checks"] = part_checks(rows, progress, names) if len(names) > 1 else None
     write_json(prog_path, progress)
     with open(out / f"GRADROWS_{tag}.jsonl", "w") as f:
         for rec in progress["rows"]:
@@ -307,7 +313,33 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
         p.unlink(missing_ok=True)
     return {"key": tag, "micro_batches": len(acc.done), "rows": len(progress["rows"]), "sq_norm": norms,
             "part_sum_rel": progress["part_sum_rel"], "rounding_rel": progress["rounding_rel"],
-            "seconds_end": round(time.time() - t_end, 1)}
+            "part_checks": progress["part_checks"], "seconds_end": round(time.time() - t_end, 1)}
+
+
+def part_checks(rows: list[dict], progress: dict, names: list[str]) -> dict:
+    """HANDOFF-VLM-VAD-GRAD-003-R3 Part A item 3, for each split of the key:
+    coverage: rows of the row file in no part and in more than one part;
+    loss_rel_diff: |sum_m s_m sum_X l_X,m - sum_m s_m l_m| / |sum_m s_m l_m| (l_X,m = masked part loss x T_X / T_m,
+      s_m = B_m / mini), limit 1e-6;
+    part_sum_bound = 2 rounding_rel sqrt((sum_X ||g_X||^2 + ||g||^2) / (2 ||g||^2)); pass when all three hold."""
+    out = {}
+    norms, r = progress["sq_norm"], progress["rounding_rel"]
+    batch = sum(m["scale"] * m["loss"] for m in progress["micro"])
+    for group in (("C", "I"), ("L1", "L2", "L3")):
+        if not all(n in names for n in group):
+            continue
+        split = "+".join(group)
+        n_in = [sum(i in members(p, rows) for p in group) for i in range(len(rows))]
+        cov = {"rows_in_no_part": n_in.count(0), "rows_in_more_than_one": sum(c > 1 for c in n_in)}
+        part_sum = sum(m["scale"] * sum(m["part_losses"].get(p, 0.0) for p in group) for m in progress["micro"])
+        loss_rel = abs(part_sum - batch) / abs(batch) if batch != 0 else float("nan")
+        bound = 2 * r * math.sqrt((sum(norms[p] for p in group) + norms["total"]) / (2 * norms["total"])) \
+            if norms["total"] > 0 else float("nan")
+        rel = progress["part_sum_rel"][split]
+        out[split] = {"coverage": cov, "loss_rel_diff": loss_rel, "part_sum_rel": rel, "part_sum_bound": bound,
+                      "pass": cov == {"rows_in_no_part": 0, "rows_in_more_than_one": 0} and loss_rel <= 1e-6
+                      and rel <= bound}
+    return out
 
 
 def rel_to_total(acc: Accum, group) -> float:
