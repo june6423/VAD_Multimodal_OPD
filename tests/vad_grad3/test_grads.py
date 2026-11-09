@@ -358,9 +358,12 @@ def test_displacement_vectors(tmp_path, monkeypatch):
         assert info[name]["elements"] == 248 * 12
 
 
-def test_gram_matrices(tmp_path):
+@pytest.mark.parametrize("block", [None, "1000"])
+def test_gram_matrices(tmp_path, monkeypatch, block):
     from safetensors.torch import save_file
 
+    if block:
+        monkeypatch.setenv("BLOCK", block)
     n = 248 * 12
     g = torch.Generator().manual_seed(3)
     write_g3(tmp_path / "G3_PARAMS.txt")
@@ -372,6 +375,9 @@ def test_gram_matrices(tmp_path):
     vecs = {k: torch.randn(n, generator=g) for k in names + list(grads.DISPLACEMENTS)}
     for k in names:
         torch.save(vecs[k], out / "vectors" / f"{k}.pt")
+    view = torch.randn(n + 5, generator=g)[5:]  # a view with storage offset 5 (the reader must skip it)
+    vecs["O__B8-f1__C"] = view.clone()
+    torch.save(view, out / "vectors" / "O__B8-f1__C.pt")
     for k in grads.DISPLACEMENTS:
         torch.save(vecs[k], disp / f"{k}.pt")
     (out / "progress_O__B8-f1.json").write_text(json.dumps(

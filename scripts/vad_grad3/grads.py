@@ -24,7 +24,7 @@ Gram (Part A item 4): GRAM_<checkpoint>.json holds, for all vector files and the
 Usage: python grads.py run <repo> <COMMAND_B200.txt> <model dir> <rollouts.jsonl> <rows dir> <G3_PARAMS.txt> <out dir> <mode> <key>...
        python grads.py displacement <base model dir> <G3_PARAMS.txt> <out dir> <A1 80> <A1 130> <A2 80> <A2 130>  (actor dirs)
        python grads.py gram <out dir> <displacement dir> <V file> <G3_PARAMS.txt> <checkpoint>
-Env: STOP_AFTER_MICRO (0; stop once after this many micro-batches, exit 75), COMMIT_SECONDS (1800), BLOCK (8388608).
+Env: STOP_AFTER_MICRO (0; stop once after this many micro-batches, exit 75), COMMIT_SECONDS (1800), BLOCK (8388608), READERS (16; gram read threads).
 """
 
 from __future__ import annotations
@@ -33,9 +33,13 @@ import hashlib
 import json
 import math
 import os
+import struct
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import numpy as np
 
 HERE = Path(__file__).resolve().parent
 STOP_EXIT = 75
@@ -466,8 +470,8 @@ def gram(argv: list[str]):
     names = [f.stem for f in files]
     vecs = [torch.load(f, mmap=True) for f in files]
     n = vecs[0].numel()
-    if any(v.numel() != n for v in vecs):
-        raise SystemExit("STOP: vector files differ in length")
+    if any(v.numel() != n or v.dtype != torch.float32 for v in vecs):
+        raise SystemExit("STOP: vector files differ in length or are not fp32")
     d, d_info = metric_d(v_file, ckpt.grad_set(g3_params))
     if d.numel() != n:
         raise SystemExit(f"STOP: D has {d.numel()} elements, the vectors {n}")
@@ -475,15 +479,30 @@ def gram(argv: list[str]):
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     t0 = time.time()
     k = len(vecs)
+    # Large pread calls on READERS threads, not mmap slices: mmap page faults read Lustre at 0.108 GB/s (IO_CHECK of
+    # TASK-VLM-VAD-GRAD-003-001), 64 MB sequential reads at 5.4 GB/s.
+    fds = [os.open(f, os.O_RDONLY) for f in files]
+    offs = [data_offset(f, v) for f, v in zip(files, vecs)]
+    for j, v in enumerate(vecs):
+        for s in (0, max(0, n - 1024)):
+            if not torch.equal(read_into(fds[j], offs[j], s, np.empty(min(1024, n - s), np.float32)), v[s:s + 1024]):
+                raise SystemExit(f"STOP: the pread of {files[j].name} differs from torch.load")
+    del vecs
+    buf = np.empty((k, min(block, n)), np.float32)
     g = {m: torch.zeros(k, k, dtype=torch.float64, device=dev) for m in ("raw", "M1", "M2")}
-    for s in range(0, n, block):
-        x = torch.stack([v[s:s + block].to(dev, torch.float64) for v in vecs])
-        db = d[s:s + block].to(dev, torch.float64)
-        xd = x * db
-        g["raw"] += x @ x.T
-        g["M1"] += xd @ x.T
-        g["M2"] += xd @ xd.T
-        del x, xd, db
+    with ThreadPoolExecutor(int(os.environ.get("READERS", "16"))) as ex:
+        for s in range(0, n, block):
+            m_s = min(block, n - s)
+            list(ex.map(lambda j: read_into(fds[j], offs[j], s, buf[j, :m_s]), range(k)))
+            x = torch.from_numpy(buf[:, :m_s]).to(dev, torch.float64)
+            db = d[s:s + block].to(dev, torch.float64)
+            xd = x * db
+            g["raw"] += x @ x.T
+            g["M1"] += xd @ x.T
+            g["M2"] += xd @ xd.T
+            del x, xd, db
+    for fd in fds:
+        os.close(fd)
     sep = {}
     for p in sorted(out.glob("progress_*.json")):
         state = json.loads(p.read_text())
@@ -501,6 +520,37 @@ def gram(argv: list[str]):
     write_json(out / "VECTORS_REMOVED.json", {"at": now(), "gram": path.name,
                                              "gram_sha256": sha256_file(path), "removed": removed})
     print(f"gram {checkpoint}: {k} vectors of {n} elements, {res['seconds']} s, {len(removed)} vector files removed")
+
+
+def data_offset(path: Path, t) -> int:
+    """Byte offset of element 0 of t = torch.load(path, mmap=True) in the torch.save zip file (one stored record)."""
+    import zipfile
+
+    with zipfile.ZipFile(path) as z:
+        recs = [i for i in z.infolist() if "/data/" in i.filename]
+    if len(recs) != 1 or recs[0].compress_type != zipfile.ZIP_STORED:
+        raise SystemExit(f"STOP: {path} does not hold one stored data record")
+    with open(path, "rb") as f:
+        f.seek(recs[0].header_offset)
+        head = f.read(30)
+    if head[:4] != b"PK\x03\x04":
+        raise SystemExit(f"STOP: {path}: no local file header at {recs[0].header_offset}")
+    name_len, extra_len = struct.unpack("<HH", head[26:30])
+    return recs[0].header_offset + 30 + name_len + extra_len + t.storage_offset() * t.element_size()
+
+
+def read_into(fd: int, off: int, s: int, out):
+    """Read fp32 elements s .. s + len(out) of a vector file into the numpy array out; return it as a tensor."""
+    import torch
+
+    mv = memoryview(out).cast("B")
+    got = 0
+    while got < len(mv):
+        r = os.preadv(fd, [mv[got:]], off + 4 * s + got)
+        if r == 0:
+            raise SystemExit("STOP: a vector file ends early")
+        got += r
+    return torch.from_numpy(out)
 
 
 def sha256_file(path: Path) -> str:
