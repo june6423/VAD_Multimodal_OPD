@@ -15,6 +15,7 @@
 Apply monkey-patch function to models
 """
 
+import os
 import sys
 from types import SimpleNamespace
 from typing import Optional
@@ -460,6 +461,12 @@ def apply_monkey_patch(
             Qwen3_5Model.forward = qwen3_5_base_forward
             Qwen3_5ForConditionalGeneration.forward = forward_with_normal_backend
             Qwen3_5VisionModel.fast_pos_embed_interpolate = fast_pos_embed_interpolate
+            print(f"VAD_PACKFIX={os.environ.get('VAD_PACKFIX', '<unset>')} pid={os.getpid()}")
+            if os.environ.get("VAD_PACKFIX") == "1":
+                from verl.models.transformers.qwen3_5_packfix import apply_packfix
+
+                if apply_packfix():
+                    print("Packed linear-attention fix applied (VAD_PACKFIX=1)")
             if ulysses_sp_size > 1:
                 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5TextModel
 
