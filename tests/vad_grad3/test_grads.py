@@ -420,3 +420,37 @@ def test_diag_partsum_on_the_toy(setup):
         for method in ("replay", "masked"):
             assert res["partitions"][key][method]["loss_rel_diff"] < 1e-6, (key, method)
             assert res["partitions"][key][method]["grad_rel_diff"] < 1e-6, (key, method)
+
+
+def test_diag_order_on_the_toy(setup):
+    """DIRECTIVE-004 diagnostic: on the fp32 toy, each order test and the fresh-forward parts give g_ref."""
+    diag = load("vad_grad3_diag_order", DIR / "diag_order.py")
+    rows, data = toy_rows()
+    recs = row_file(rows, "B8-f1")
+    diag.partsum.MIN_ROWS = 2
+    mrows = diag.partsum.pick_micro(recs)
+    ctx = ToyCtx(make_actor(setup), data)
+    res = diag.diagnose(ctx, mrows, {r["traj"]: {"traj": r["traj"]} for r in recs})
+    n_parts = sum(bool(grads.members(p, mrows)) for g in diag.partsum.PARTITIONS for p in g)
+    assert res["buffers_clean"] is True and res["buffer_checks"] == 3 + 2 + n_parts + 2
+    o = res["order"]
+    assert o["full_x3"]["b2_vs_b1"] < 1e-6 and o["full_x3"]["b3_vs_b1"] < 1e-6
+    assert o["C_then_full"]["full_vs_ref"] < 1e-6 and o["C_then_full"]["C_retained_vs_C_fresh"] < 1e-6
+    for key in ("C+I", "L1+L2+L3"):
+        assert res["fresh_parts"][key]["grad_rel_diff"] < 1e-6, key
+        assert res["fresh_parts"][key]["loss_rel_diff"] < 1e-6, key
+    assert res["fresh_parts"]["C+I"]["top_tensors"][0]["name"] == "0"
+    assert res["fresh_full_vs_ref"] < 1e-6 and res["scale3_vs_ref"] < 1e-6
+    assert res["grad_dtypes"] == ["torch.float32"]
+
+
+def test_diag_order_reports_hooks_and_checkpointing():
+    diag = load("vad_grad3_diag_order", DIR / "diag_order.py")
+    m = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 1))
+    m[0].register_full_backward_hook(lambda *a: None)
+    m[1].weight.register_hook(lambda g: g)
+    m[1].gradient_checkpointing = True
+    rep = diag.model_report(m)
+    assert rep["module_hooks"] == [{"module": "0", "backward_hooks": 1}]
+    assert rep["param_hooks"] == [{"param": "1.weight", "tensor_hooks": 1}]
+    assert rep["checkpointing_modules"] == 1
