@@ -283,11 +283,12 @@ def differences(res: dict, cks: list[str]) -> dict:
 
 
 def checks(d: Path) -> dict:
-    """part_sum_rel and rounding_rel of each key (grads.py progress files, DIRECTIVE-VLM-VAD-GRAD-003-005)."""
+    """part_sum_rel, rounding_rel and part_checks of each key (grads.py progress files, DIRECTIVE-VLM-VAD-GRAD-003-005,
+    R3 Part A item 3.6)."""
     out = {}
     for p in sorted(d.glob("progress_*.json")):
         state = json.loads(p.read_text())
-        out[p.stem[len("progress_"):]] = {k: state.get(k) for k in ("part_sum_rel", "rounding_rel")}
+        out[p.stem[len("progress_"):]] = {k: state.get(k) for k in ("part_sum_rel", "rounding_rel", "part_checks")}
     return out
 
 

@@ -273,15 +273,19 @@ def test_cross_fold_cos_parts_flag_and_null(tmp_path):
 
 
 def test_checks_hold_part_sum_and_rounding_of_each_key(tmp_path):
-    """DIRECTIVE-VLM-VAD-GRAD-003-005: part_sum_rel and rounding_rel of each key (progress files) in STATS."""
+    """DIRECTIVE-VLM-VAD-GRAD-003-005 and R3 Part A item 3.6: part_sum_rel, rounding_rel and part_checks
+    (coverage, loss check, part_sum_bound) of each key (progress files) in STATS."""
     rng = np.random.default_rng(12)
     vecs = {k: v for k, v in make_random(rng).items() if not any(f"f{f}" in k for f in (3, 4))}
     write_ck(tmp_path, "M0", vecs, np.ones(40), {f: rows_of(rng, 4) for f in (1, 2)},
              {(f, j): rows_of(rng, 2) for f in (1, 2) for j in range(8)})
+    pc = {"C+I": {"coverage": {"none": 0, "multiple": 0}, "loss_rel_diff": 1e-8, "part_sum_rel": 0.01,
+                  "part_sum_bound": 0.05, "pass": True}}
     (tmp_path / "M0" / "progress_O__B8-f1.json").write_text(json.dumps(
-        {"part_sum_rel": {"C+I": 0.01, "L1+L2+L3": 0.02}, "rounding_rel": 0.03, "micro": []}))
+        {"part_sum_rel": {"C+I": 0.01, "L1+L2+L3": 0.02}, "rounding_rel": 0.03, "part_checks": pc, "micro": []}))
     (tmp_path / "M0" / "progress_Fx__R8-f1-s1.json").write_text(json.dumps(
-        {"part_sum_rel": None, "rounding_rel": 0.025, "micro": []}))
+        {"part_sum_rel": None, "rounding_rel": 0.025, "part_checks": None, "micro": []}))
     c = stats.compute(tmp_path, ["M0"])["checkpoints"]["M0"]["checks"]
-    assert c == {"O__B8-f1": {"part_sum_rel": {"C+I": 0.01, "L1+L2+L3": 0.02}, "rounding_rel": 0.03},
-                 "Fx__R8-f1-s1": {"part_sum_rel": None, "rounding_rel": 0.025}}
+    assert c == {"O__B8-f1": {"part_sum_rel": {"C+I": 0.01, "L1+L2+L3": 0.02}, "rounding_rel": 0.03,
+                              "part_checks": pc},
+                 "Fx__R8-f1-s1": {"part_sum_rel": None, "rounding_rel": 0.025, "part_checks": None}}
