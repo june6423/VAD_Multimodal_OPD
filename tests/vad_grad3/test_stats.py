@@ -247,3 +247,26 @@ def test_two_folds_give_values_and_nan_jackknife(tmp_path):
     q = stats.compute(tmp_path, ["M0"])["checkpoints"]["M0"]["metrics"]["raw"]
     assert np.isfinite(q["SNR8"]["value"]) and np.isnan(q["SNR8"]["se"]) and q["SNR8"]["folds"] == 2
     assert np.isfinite(q["t_C_D__A1_0_80"]["se"])
+
+
+def test_cross_fold_cos_parts_flag_and_null(tmp_path):
+    """DIRECTIVE-VLM-VAD-GRAD-003-003: each cross-fold cos has its numerator and both squared-norm estimates, a flag
+    for an estimate <= 0 (not clipped), and an undefined value is null in the written file (no NaN)."""
+    rng = np.random.default_rng(11)
+    vecs = {k: v for k, v in make_random(rng).items() if not any(f"f{f}" in k for f in (3, 4))}
+    vecs[stats.g8(2, "C")] = -vecs[stats.g8(1, "C")]  # cross-fold ||E g_C||^2 = <C1, C2> < 0
+    write_ck(tmp_path, "M0", vecs, np.ones(40), {f: rows_of(rng, 4) for f in (1, 2)},
+             {(f, j): rows_of(rng, 2) for f in (1, 2) for j in range(8)})
+    q = stats.compute(tmp_path, ["M0"])["checkpoints"]["M0"]["metrics"]["raw"]
+    c1, c2, i1, i2 = (vecs[stats.g8(f, x)] for x in ("C", "I") for f in (1, 2))
+    assert q["cos_EgC_EgI_num"]["value"] == pytest.approx((c1 @ i2 + c2 @ i1) / 2)
+    assert q["cos_EgC_EgI_norm2_x"]["value"] == pytest.approx(c1 @ c2) and c1 @ c2 < 0
+    assert q["cos_EgC_EgI_norm2_y"]["value"] == pytest.approx(i1 @ i2)
+    assert q["cos_EgC_EgI"]["norm_nonpositive"] is True and np.isnan(q["cos_EgC_EgI"]["value"])
+    assert "cos_EuE8_D__A1_0_80_num" in q and q["cos_EuE8_D__A1_0_80"]["norm_nonpositive"] is False
+    out = tmp_path / "STATS_GRAD3.json"
+    stats.write(stats.compute(tmp_path, ["M0"]), out)
+    text = out.read_text()
+    assert "NaN" not in text and "Infinity" not in text
+    w = json.loads(text)["checkpoints"]["M0"]["metrics"]["raw"]
+    assert w["cos_EgC_EgI"]["value"] is None and w["SNR8"]["se"] is None and w["SNR8"]["delete_one"] == [None, None]

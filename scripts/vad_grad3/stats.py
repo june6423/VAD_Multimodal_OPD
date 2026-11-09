@@ -131,6 +131,12 @@ class Checkpoint:
         return [r for f in folds for r in self.rows1.get(f, [])]
 
 
+def cos_parts(q: dict, name: str, num: float, nx: float, ny: float):
+    """A cross-fold cos with its numerator and both squared-norm estimates (not clipped; DIRECTIVE-003)."""
+    q[f"{name}_num"], q[f"{name}_norm2_x"], q[f"{name}_norm2_y"] = num, nx, ny
+    q[name] = div(num, sqrt(nx) * sqrt(ny))
+
+
 def cross_quantities(c: Checkpoint, m: Metric, folds: list[int]) -> dict:
     q = {}
     one8 = lambda a: [g8(a)]  # noqa: E731
@@ -145,11 +151,11 @@ def cross_quantities(c: Checkpoint, m: Metric, folds: list[int]) -> dict:
     q["d_CI"] = div(s["C"], f8["C"]) - div(s["I"], f8["I"])
     cc = cross(m.ip, folds, lambda a: [g8(a, "C")], lambda a: [g8(a, "C")])
     ii = cross(m.ip, folds, lambda a: [g8(a, "I")], lambda a: [g8(a, "I")])
-    q["cos_EgC_EgI"] = div(cross(m.ip, folds, lambda a: [g8(a, "C")], lambda a: [g8(a, "I")]), sqrt(cc) * sqrt(ii))
+    cos_parts(q, "cos_EgC_EgI", cross(m.ip, folds, lambda a: [g8(a, "C")], lambda a: [g8(a, "I")]), cc, ii)
     for d in c.deltas:
         if d.startswith("D__A1"):
             num = -mean(m.ip(g8(a), d) for a in folds)
-            q[f"cos_EuE8_{d}"] = div(num, sqrt(cross(m.pp, folds, one8, one8)) * sqrt(m.dd(d)))
+            cos_parts(q, f"cos_EuE8_{d}", num, cross(m.pp, folds, one8, one8), m.dd(d))
     if all(m.has(g1(a, j)) for a in folds for j in range(SIBLINGS)):
         all1 = lambda a: [g1(a, j) for j in range(SIBLINGS)]  # noqa: E731
         m1 = cross(m.ip, folds, all1, all1)
@@ -167,7 +173,7 @@ def cross_quantities(c: Checkpoint, m: Metric, folds: list[int]) -> dict:
         for d in c.deltas:
             if d.startswith("D__A2"):
                 num = -mean(m.ip(g1(a, j), d) for a in folds for j in range(SIBLINGS))
-                q[f"cos_EuE1_{d}"] = div(num, sqrt(cross(m.pp, folds, all1, all1)) * sqrt(m.dd(d)))
+                cos_parts(q, f"cos_EuE1_{d}", num, cross(m.pp, folds, all1, all1), m.dd(d))
     for mode, names in COMP.items():
         if m.has(*names):
             pairs = [(p, r) for k, p in enumerate(names) for r in names[k + 1:]]
@@ -242,6 +248,8 @@ def with_errors(c: Checkpoint, m: Metric) -> dict:
         dels = [j.get(key, NAN) for j in jack]
         out[key] = {"value": value, "se": jackknife(dels), "se_rule": "jackknife", "folds": len(folds),
                     "delete_one": dels}
+        if f"{key}_norm2_x" in full:
+            out[key]["norm_nonpositive"] = bool(full[f"{key}_norm2_x"] <= 0 or full[f"{key}_norm2_y"] <= 0)
     per = [fold_quantities(c, m, f) for f in folds]
     for key in per[0]:
         vals = [p.get(key, NAN) for p in per]
@@ -283,10 +291,24 @@ def compute(root: Path, cks: list[str]) -> dict:
     return {"checkpoints": res, "differences": differences(res, cks)}
 
 
+def null_if_undefined(x):
+    """NaN and infinity become null (undefined values, DIRECTIVE-003); the file is strict JSON."""
+    if isinstance(x, dict):
+        return {k: null_if_undefined(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [null_if_undefined(v) for v in x]
+    if isinstance(x, float) and not math.isfinite(x):
+        return None
+    return x
+
+
+def write(res: dict, out: Path):
+    Path(out).write_text(json.dumps(null_if_undefined(res), indent=1, allow_nan=False))
+
+
 def main():
     root, out, *cks = sys.argv[1:]
-    res = compute(Path(root), cks)
-    Path(out).write_text(json.dumps(res, indent=1))
+    write(compute(Path(root), cks), Path(out))
 
 
 if __name__ == "__main__":
