@@ -6,10 +6,14 @@ use_remove_padding, then the x-minus and x-plus teacher forwards), times B_m / m
 step gradient is the mean over the 6 ranks (FSDP) of the sum over the micro-batches of the rank. The gradient covers the
 248 tensors of params.grad_params in the order of G3_PARAMS.txt, bf16 parameters, each micro-batch gradient added to an
 fp32 accumulator with the factor 1 / 6.
-Parts (Definition 9.1, 9.2): O4_m = sum_i (T_i / T_m) l_i, l_i = the O4 loss of row i on its slice of the packed outputs
-(Replay; the per-token O4 loss of a row uses only its own tensors and agg_loss token-mean divides by T_m,
-core_algos.py 1057-1060, 1207-1209). Part X = the rows of X: loss scale x sum_{i in X} (T_i / T_m) l_i, its own
-backward. Each micro-batch checks |sum_i (T_i/T_m) l_i - O4_m| <= 1e-4 |O4_m| (else STOP).
+Parts (Definition 9.1, 9.2): part X = the O4 loss of the same packed forward outputs with the response mask of the rows
+outside X set to 0, times T_X / T_m (token mean, core_algos.py 1057-1060, 1207-1209) and B_m / mini_cfg, its own
+backward on the retained graph. Row losses l_i (GRADROWS): the O4 loss of row i on its slice of the packed outputs
+(Replay). Each micro-batch checks |sum_i (T_i/T_m) l_i - O4_m| <= 1e-4 |O4_m| (else STOP).
+Rounding level (DIRECTIVE-VLM-VAD-GRAD-003-005): after the total backward, the backward of 3 x the total target on the
+retained graph, divided by 3, goes to the accumulator total_x3 (partial files, no vector file). Each key writes
+rounding_rel = ||total_x3 - total|| / ||total|| and part_sum_rel = ||sum of the parts - total|| / ||total|| (C+I and
+L1+L2+L3, null for a key without parts) to its progress file and to runs.jsonl.
 Vectors of a batch key (mode O = VAD_PACKFIX unset, Fx = VAD_PACKFIX=1, set by run_grad3.sh for the process):
   O, B8-f<f>: total, C, I, L1, L2, L3.  O, B1-f<f>-j<j>: total, C, I.  Other keys (R8-*, Fx, <batch>@rep): total.
   <batch>@rep: the rows of <batch> again (the numerical repeat of Definition 9.3).
@@ -46,6 +50,7 @@ STOP_EXIT = 75
 RANKS = 6
 CHECK_REL = 1e-4
 DISPLACEMENTS = ("D__A1_0_80", "D__A1_80_130", "D__A2_0_80", "D__A2_80_130")
+X3 = "total_x3"  # accumulator of the scale-3 gradients; no vector file
 
 
 class Stop(Exception):
@@ -180,16 +185,17 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
     if (out / f"GRADROWS_{tag}.jsonl").exists():
         return {"key": tag, "skipped": "GRADROWS exists"}
     names = parts_of(mode, key)
+    accs = names + [X3]
     mini = {8: 128, 1: 16}[rows[0]["n"]]
     micro = {}
     for r in rows:
         micro.setdefault(micro_key(r), []).append(r)
-    acc = Accum(ctx.params, ctx.device, names)
+    acc = Accum(ctx.params, ctx.device, accs)
     prog_path = out / f"progress_{tag}.json"
     progress = json.loads(prog_path.read_text()) if prog_path.exists() else {"rows": [], "micro": [], "committed": []}
-    partial = {n: vec_dir / f"partial_{tag}__{n}.pt" for n in names}
+    partial = {n: vec_dir / f"partial_{tag}__{n}.pt" for n in accs}
     if all(p.exists() for p in partial.values()):
-        dones = [acc.load(partial[n], n) for n in names]
+        dones = [acc.load(partial[n], n) for n in accs]
         if any(d != dones[0] for d in dones):
             stop_file(out, f"partial vectors of {tag} hold different micro-batches")
         acc.done = dones[0]
@@ -201,7 +207,7 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
 
     def commit():
         t = time.time()
-        for n in names:
+        for n in accs:
             acc.save(partial[n], n)
         progress["committed"] = [list(k) for k in acc.done]
         progress["seconds_commit_max"] = max(progress.get("seconds_commit_max", 0.0), round(time.time() - t, 1))
@@ -239,19 +245,30 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
         if not math.isfinite(float(loss.detach())):
             stop_file(out, f"non-finite loss in {tag} micro-batch {k} (stop condition 3)")
         t2 = time.time()
-        for j, n in enumerate(names):
-            keep = j < len(names) - 1
-            if n == "total":
-                target = loss * scale
-            else:
-                idx = members(n, mrows)
-                if not idx:
-                    continue
-                target = sum(l_rows[i] * (w[i] * scale) for i in idx)
-            grads = torch.autograd.grad(target, ctx.params, retain_graph=keep)
-            acc.add(n, grads, 1.0 / RANKS)
-            del grads, target
+        grads = torch.autograd.grad(loss * scale, ctx.params, retain_graph=True)
+        acc.add("total", grads, 1.0 / RANKS)
+        del grads
         t3 = time.time()
+        # Rounding level (DIRECTIVE-VLM-VAD-GRAD-003-005): the backward of 3 x the target on the retained graph, / 3.
+        grads = torch.autograd.grad(loss * (3 * scale), ctx.params, retain_graph=need_parts)
+        acc.add(X3, grads, 1.0 / (3 * RANKS))
+        del grads
+        t4 = time.time()
+        parts = [n for n in names[1:] if members(n, mrows)]
+        for j, n in enumerate(parts):
+            # Definition 9.1: the O4 loss of the same packed forward outputs with the response mask of the rows
+            # outside part n set to 0, times T_n / T_m (token mean) and B_m / mini.
+            idx = members(n, mrows)
+            mask = mi["response_mask"].clone()
+            for i in range(len(mrows)):
+                if i not in idx:
+                    mask[i] = 0
+            mmi = {**mi, "response_mask": mask}
+            target = rep.o4(mmi, student, minus_d, plus_d) * (float(loss_tokens(mmi).sum()) / t_m * scale)
+            grads = torch.autograd.grad(target, ctx.params, retain_graph=j < len(parts) - 1)
+            acc.add(n, grads, 1.0 / RANKS)
+            del grads, target, mmi
+        t5 = time.time()
         recs = [{**r, "l_row": rec_l[i], "O4_micro": float(loss.detach()), "scale": scale} for i, r in enumerate(mrows)]
         del loss, student, minus, plus, mi, rows_mi
         if need_parts:
@@ -260,7 +277,8 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
         progress["rows"] += recs
         progress["micro"].append({"key": list(k), "rows": len(mrows), "tokens": sum(r["total_tokens"] for r in mrows),
                                   "check_abs": check, "seconds_inputs": round(t1 - t0, 3),
-                                  "seconds_forward": round(t2 - t1, 3), "seconds_backward": round(t3 - t2, 3)})
+                                  "seconds_forward": round(t2 - t1, 3),
+                                  "seconds_backward": round(t3 - t2 + t5 - t4, 3), "seconds_rounding": round(t4 - t3, 3)})
         write_json(prog_path, progress)
         counter["micro"] += 1
         if opts["stop_after"] and counter["micro"] == opts["stop_after"]:
@@ -279,8 +297,8 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
         os.replace(tmp, vec_dir / f"{tag}__{n}.pt")
     progress["sq_norm"] = norms
     progress["committed"] = [list(k) for k in acc.done]
-    if len(names) > 1:
-        progress["part_sum"] = part_sum_check(acc, names)
+    progress["part_sum_rel"] = part_sum_check(acc, names) if len(names) > 1 else None
+    progress["rounding_rel"] = rel_to_total(acc, (X3,))
     write_json(prog_path, progress)
     with open(out / f"GRADROWS_{tag}.jsonl", "w") as f:
         for rec in progress["rows"]:
@@ -288,22 +306,23 @@ def run_batch(ctx, mode: str, key: str, rows: list[dict], rollouts: dict, out: P
     for p in partial.values():
         p.unlink(missing_ok=True)
     return {"key": tag, "micro_batches": len(acc.done), "rows": len(progress["rows"]), "sq_norm": norms,
-            "part_sum": progress.get("part_sum"), "seconds_end": round(time.time() - t_end, 1)}
+            "part_sum_rel": progress["part_sum_rel"], "rounding_rel": progress["rounding_rel"],
+            "seconds_end": round(time.time() - t_end, 1)}
+
+
+def rel_to_total(acc: Accum, group) -> float:
+    """||sum of the group vectors - total|| / ||total||, fp64 per tensor."""
+    total2 = acc.sq_norm("total")
+    d2 = 0.0
+    for t in range(len(acc.parts["total"])):
+        s = sum(acc.parts[n][t].double() for n in group)
+        d2 += float((s - acc.parts["total"][t].double()).pow(2).sum())
+    return math.sqrt(d2 / total2) if total2 > 0 else float("nan")
 
 
 def part_sum_check(acc: Accum, names: list[str]) -> dict:
-    """||sum of the parts - total|| / ||total|| for each partition of the rows (C+I, L1+L2+L3), fp64 per tensor."""
-    out = {}
-    total2 = acc.sq_norm("total")
-    for group in (("C", "I"), ("L1", "L2", "L3")):
-        if not all(n in names for n in group):
-            continue
-        d2 = 0.0
-        for t in range(len(acc.parts["total"])):
-            s = sum(acc.parts[n][t].double() for n in group)
-            d2 += float((s - acc.parts["total"][t].double()).pow(2).sum())
-        out["+".join(group)] = math.sqrt(d2 / total2) if total2 > 0 else float("nan")
-    return out
+    """part_sum_rel for each partition of the rows (C+I, L1+L2+L3)."""
+    return {"+".join(g): rel_to_total(acc, g) for g in (("C", "I"), ("L1", "L2", "L3")) if all(n in names for n in g)}
 
 
 class Context:

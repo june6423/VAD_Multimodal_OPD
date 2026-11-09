@@ -6,7 +6,8 @@
 #   Fx with VAD_PACKFIX=1 (keys B8-f1, R8-f1-s1..3); grads.py gram (then the vector files are removed).
 # PILOT=1 (Part A item 9): pilot.py select (2 folds x 6 prompts per checkpoint), random partition s1 only, a forced
 #   stop after one micro-batch and a resume (first checkpoint), the full row files in rows_full/ for pilot.py project
-#   (PROJECTION.json).
+#   (PROJECTION.json). The B1-f1-j0 key uses its full row file (rows_full/), so that B1 micro-batches hold >= 2 rows
+#   of both labels (pilot.py mixed_b1 checks it).
 # At the end: stats.py -> STATS_GRAD3.json, then the displacement vectors are removed (DISPLACEMENT_REMOVED.txt).
 # Usage: B200_ROOT=<root> ENV_ROOT=<environment root> LABELS_ROOT=<TASK-GRAD-001-005 output> \
 #   ADAM_ROOT=<TASK-GRAD-001-009 output> [PILOT=1] scripts/vad_grad3/run_grad3.sh <output_root>
@@ -84,6 +85,12 @@ for ck in M0 A1_80 A1_130; do
       extra=("$dir/PILOT_PROMPTS.json")
     fi
     "$py" scripts/vad_grad3/batches.py "$ro" "$lab" "$dir/rows" "${extra[@]}" >> "$log" 2>&1 || exit 1
+    if [[ "$pilot" == 1 ]]; then
+      # DIRECTIVE-VLM-VAD-GRAD-003-005: the pilot B1 micro-batches of 6 prompts hold 1 row each. The full B1-f1-j0
+      # key gives B1 micro-batches with >= 2 rows of both labels.
+      cp "$dir/rows_full/ROWS_B1-f1-j0.jsonl" "$dir/rows/ROWS_B1-f1-j0.jsonl" || exit 1
+      "$py" scripts/vad_grad3/pilot.py mixed_b1 "$dir/rows/ROWS_B1-f1-j0.jsonl" >> "$log" 2>&1 || exit 1
+    fi
   fi
   keys_o=() keys_fx=(B8-f1)
   for f in 1 2 3 4; do [[ -f "$dir/rows/ROWS_B8-f$f.jsonl" ]] && keys_o+=("B8-f$f"); done

@@ -50,7 +50,8 @@ def test_project_scales_the_pilot_times(tmp_path):
     full, _ = batches.build(rollouts, labels)
     for name, recs in full.items():
         (d / "rows_full" / f"ROWS_{name}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
-    micro = lambda tok, s: {"tokens": tok, "seconds_inputs": 0.0, "seconds_forward": s, "seconds_backward": s}  # noqa: E731
+    micro = lambda tok, s: {"tokens": tok, "seconds_inputs": 0.0, "seconds_forward": s, "seconds_backward": s,  # noqa: E731
+                            "seconds_rounding": s / 2}
     for tag, n in (("O__B8-f1", 6), ("O__B1-f1-j0", 3), ("O__R8-f1-s1", 1), ("Fx__B8-f1", 1)):
         (d / f"progress_{tag}.json").write_text(json.dumps({"micro": [micro(1000, 1.0)], "sq_norm": {}}))
     results = [{"key": t, "seconds_end": 10.0 * n, "sq_norm": {str(k): 1.0 for k in range(n)}}
@@ -61,10 +62,24 @@ def test_project_scales_the_pilot_times(tmp_path):
     res = pilot.project(tmp_path, ["M0"])
     ck = res["checkpoints"]["M0"]
     tok = lambda name: sum(r["total_tokens"] for r in full[name])  # noqa: E731
-    assert ck["compute_seconds"]["B8"] == pytest.approx(2.0 / 1000 * sum(tok(f"B8-f{f}") for f in range(1, 5)))
-    assert ck["compute_seconds"]["Fx"] == pytest.approx(2.0 / 1000 * 4 * tok("B8-f1"))
+    b8 = sum(tok(f"B8-f{f}") for f in range(1, 5))
+    assert ck["compute_seconds"]["B8"] == pytest.approx(2.5 / 1000 * b8)
+    assert ck["compute_seconds"]["Fx"] == pytest.approx(2.5 / 1000 * 4 * tok("B8-f1"))
+    assert ck["rounding_seconds"]["B8"] == pytest.approx(0.5 / 1000 * b8)
+    assert res["rounding_hours"] == pytest.approx(sum(ck["rounding_seconds"].values()) / 3600)
     assert ck["save_seconds"]["B1"] == pytest.approx(10.0 * 96)
     assert ck["gram_seconds"] == pytest.approx(150 * 132 / (11 + 4))
     assert ck["load_seconds"] == 100.0
     assert res["total_hours"] == pytest.approx((600 + ck["total_seconds"]) / 3600)
-    assert res["peak_disk_tb"] == pytest.approx((128 + 6 + 4) * 4 * 3569090560 / 1e12)
+    assert res["peak_disk_tb"] == pytest.approx((128 + 7 + 4) * 4 * 3569090560 / 1e12)
+
+
+def test_mixed_b1_finds_a_micro_batch_with_both_labels(tmp_path):
+    """DIRECTIVE-VLM-VAD-GRAD-003-005: the pilot needs a B1 micro-batch with >= 2 rows of mixed labels."""
+    row = lambda rank, micro, label: {"rank": rank, "mini": 0, "micro": micro, "label": label}  # noqa: E731
+    path = tmp_path / "ROWS_B1-f1-j0.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in
+                            (row(0, 0, 1), row(1, 0, 0), row(1, 0, 0), row(2, 1, 0), row(2, 1, 1))))
+    assert pilot.mixed_b1(path) == [[2, 0, 1]]
+    path.write_text("".join(json.dumps(r) + "\n" for r in (row(0, 0, 1), row(1, 0, 0), row(1, 0, 0))))
+    assert pilot.mixed_b1(path) == []

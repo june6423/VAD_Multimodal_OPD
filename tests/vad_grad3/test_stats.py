@@ -270,3 +270,18 @@ def test_cross_fold_cos_parts_flag_and_null(tmp_path):
     assert "NaN" not in text and "Infinity" not in text
     w = json.loads(text)["checkpoints"]["M0"]["metrics"]["raw"]
     assert w["cos_EgC_EgI"]["value"] is None and w["SNR8"]["se"] is None and w["SNR8"]["delete_one"] == [None, None]
+
+
+def test_checks_hold_part_sum_and_rounding_of_each_key(tmp_path):
+    """DIRECTIVE-VLM-VAD-GRAD-003-005: part_sum_rel and rounding_rel of each key (progress files) in STATS."""
+    rng = np.random.default_rng(12)
+    vecs = {k: v for k, v in make_random(rng).items() if not any(f"f{f}" in k for f in (3, 4))}
+    write_ck(tmp_path, "M0", vecs, np.ones(40), {f: rows_of(rng, 4) for f in (1, 2)},
+             {(f, j): rows_of(rng, 2) for f in (1, 2) for j in range(8)})
+    (tmp_path / "M0" / "progress_O__B8-f1.json").write_text(json.dumps(
+        {"part_sum_rel": {"C+I": 0.01, "L1+L2+L3": 0.02}, "rounding_rel": 0.03, "micro": []}))
+    (tmp_path / "M0" / "progress_Fx__R8-f1-s1.json").write_text(json.dumps(
+        {"part_sum_rel": None, "rounding_rel": 0.025, "micro": []}))
+    c = stats.compute(tmp_path, ["M0"])["checkpoints"]["M0"]["checks"]
+    assert c == {"O__B8-f1": {"part_sum_rel": {"C+I": 0.01, "L1+L2+L3": 0.02}, "rounding_rel": 0.03},
+                 "Fx__R8-f1-s1": {"part_sum_rel": None, "rounding_rel": 0.025}}

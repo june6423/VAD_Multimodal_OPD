@@ -282,11 +282,20 @@ def differences(res: dict, cks: list[str]) -> dict:
     return out
 
 
+def checks(d: Path) -> dict:
+    """part_sum_rel and rounding_rel of each key (grads.py progress files, DIRECTIVE-VLM-VAD-GRAD-003-005)."""
+    out = {}
+    for p in sorted(d.glob("progress_*.json")):
+        state = json.loads(p.read_text())
+        out[p.stem[len("progress_"):]] = {k: state.get(k) for k in ("part_sum_rel", "rounding_rel")}
+    return out
+
+
 def compute(root: Path, cks: list[str]) -> dict:
     res = {}
     for ck in cks:
         c = Checkpoint(root, ck)
-        res[ck] = {"rows": row_counts(c), "metric_file": c.gram.get("metric"),
+        res[ck] = {"rows": row_counts(c), "metric_file": c.gram.get("metric"), "checks": checks(root / ck),
                    "metrics": {metric: with_errors(c, Metric(c.gram, metric)) for metric in ("raw", "D")}}
     return {"checkpoints": res, "differences": differences(res, cks)}
 

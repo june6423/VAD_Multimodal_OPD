@@ -8,11 +8,14 @@ project: the FULL wall time and the peak disk from the pilot outputs. Per checkp
   B1 with 3 parts, O total only, Fx total only), seconds per token of the pilot micro-batches (inputs, forward,
   backward) times the FULL tokens of the class (row files of rows_full/); the batch-end seconds per vector times the
   FULL vector count; the Gram seconds times the FULL vector count / the pilot vector count; the model loads per
-  process; the displacement seconds once. Peak disk = (FULL vectors + 6 partial vectors + 4 displacements) x 4 x
-  elements bytes.
+  process; the displacement seconds once. The compute seconds include the scale-3 backward; rounding_seconds and
+  rounding_hours give that part alone. Peak disk = (FULL vectors + 7 partial vectors (6 parts and total_x3) +
+  4 displacements) x 4 x elements bytes.
+mixed_b1: the micro-batches of a B1 row file with >= 2 rows of both labels; exit 1 when there is none.
 
 Usage: python pilot.py select <rollouts.jsonl> <LABELS.jsonl> <PILOT_PROMPTS.json>
        python pilot.py project <out dir> <PROJECTION.json> <checkpoint>...
+       python pilot.py mixed_b1 <ROWS_B1-*.jsonl>
 """
 
 from __future__ import annotations
@@ -85,14 +88,16 @@ def project(out: Path, cks: list[str]) -> dict:
     total = seconds.get("displacement", 0.0)
     for ck in cks:
         d = out / ck
-        tok, sec, vec_s, vec_n = {}, {}, {}, {}
+        tok, sec, rnd, vec_s, vec_n = {}, {}, {}, {}, {}
         for p in sorted(d.glob("progress_*.json")):
             tag = p.stem[len("progress_"):]
             c = key_class(tag)
             state = json.loads(p.read_text())
             for m in state["micro"]:
                 tok[c] = tok.get(c, 0) + m["tokens"]
-                sec[c] = sec.get(c, 0.0) + m["seconds_inputs"] + m["seconds_forward"] + m["seconds_backward"]
+                rnd[c] = rnd.get(c, 0.0) + m["seconds_rounding"]
+                sec[c] = (sec.get(c, 0.0) + m["seconds_inputs"] + m["seconds_forward"] + m["seconds_backward"]
+                          + m["seconds_rounding"])
         loads, ends = [], []
         for line in open(d / "runs.jsonl"):
             run = json.loads(line)
@@ -105,25 +110,44 @@ def project(out: Path, cks: list[str]) -> dict:
                     vec_n[c] = vec_n.get(c, 0) + len(r["sq_norm"])
         ft = full_tokens(d / "rows_full")
         compute = {c: sec[c] / tok[c] * ft[c] for c in tok}
+        rounding = {c: rnd[c] / tok[c] * ft[c] for c in tok}  # part of compute: the scale-3 backward
         saves = {c: vec_s[c] / vec_n[c] * FULL_VECTORS[c] for c in vec_n}
         pilot_vectors = sum(vec_n.values()) + 4
         gram = seconds[f"gram_{ck}"] * (sum(FULL_VECTORS.values()) + 4) / pilot_vectors
         ck_total = sum(compute.values()) + sum(saves.values()) + gram + 2 * max(loads)
         res["checkpoints"][ck] = {"pilot_tokens": tok, "pilot_seconds": sec, "full_tokens": ft,
-                                  "compute_seconds": compute, "save_seconds": saves, "gram_seconds": gram,
+                                  "compute_seconds": compute, "rounding_seconds": rounding, "save_seconds": saves,
+                                  "gram_seconds": gram,
                                   "load_seconds": 2 * max(loads), "total_seconds": ck_total,
                                   "pilot_vectors": pilot_vectors}
         total += ck_total
     res["displacement_seconds"] = seconds.get("displacement", 0.0)
     res["total_hours"] = total / 3600
-    res["peak_disk_tb"] = (sum(FULL_VECTORS.values()) + 6 + 4) * 4 * ELEMENTS / 1e12
+    res["rounding_hours"] = sum(sum(c["rounding_seconds"].values()) for c in res["checkpoints"].values()) / 3600
+    res["peak_disk_tb"] = (sum(FULL_VECTORS.values()) + 7 + 4) * 4 * ELEMENTS / 1e12
     res["gate_72h"] = res["total_hours"] <= 72
     return res
 
 
+def mixed_b1(path: Path) -> list[list]:
+    """Micro-batches (rank, mini, micro) of a B1 row file with >= 2 rows of both labels (DIRECTIVE-VLM-VAD-GRAD-003-005)."""
+    micro: dict[tuple, set] = {}
+    count: dict[tuple, int] = {}
+    for r in map(json.loads, open(path)):
+        k = (r["rank"], r["mini"], r["micro"])
+        micro.setdefault(k, set()).add(r["label"])
+        count[k] = count.get(k, 0) + 1
+    return [list(k) for k in sorted(micro) if count[k] >= 2 and micro[k] == {0, 1}]
+
+
 def main():
     cmd = sys.argv[1]
-    if cmd == "select":
+    if cmd == "mixed_b1":
+        found = mixed_b1(Path(sys.argv[2]))
+        print(json.dumps({"mixed_b1_micro_batches": found}))
+        if not found:
+            raise SystemExit(f"STOP: {sys.argv[2]} has no micro-batch with >= 2 rows of both labels")
+    elif cmd == "select":
         rollouts = [json.loads(x) for x in open(sys.argv[2])]
         labels = {r["traj"]: int(r["label"]) for r in map(json.loads, open(sys.argv[3]))}
         Path(sys.argv[4]).write_text(json.dumps(select(rollouts, labels), indent=1))

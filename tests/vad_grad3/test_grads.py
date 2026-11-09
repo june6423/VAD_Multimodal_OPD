@@ -228,7 +228,12 @@ def test_parts_sum_to_the_total_and_equal_masked_losses(setup, tmp_path):
     recs = row_file(rows, "B8-f1")
     actor = make_actor(setup)
     res = run(ToyCtx(actor, data), tmp_path, "B8-f1", recs)
-    assert res["part_sum"]["C+I"] < 1e-5 and res["part_sum"]["L1+L2+L3"] < 1e-5
+    assert res["part_sum_rel"]["C+I"] < 1e-5 and res["part_sum_rel"]["L1+L2+L3"] < 1e-5
+    assert 0 <= res["rounding_rel"] < 1e-6  # fp32 toy: the scale-3 gradient equals the total
+    prog = json.loads((tmp_path / "progress_O__B8-f1.json").read_text())
+    assert prog["rounding_rel"] == res["rounding_rel"] and prog["part_sum_rel"] == res["part_sum_rel"]
+    assert all(m["seconds_rounding"] >= 0 for m in prog["micro"])
+    assert not list((tmp_path / "vectors").glob("*total_x3*"))
     total = vec(tmp_path, "B8-f1", "total")
     assert torch.allclose(vec(tmp_path, "B8-f1", "C") + vec(tmp_path, "B8-f1", "I"), total, rtol=1e-5, atol=1e-8)
     ob = obj.Objectives(actor, list(actor.actor_module.parameters()))
@@ -277,7 +282,10 @@ def test_resume_gives_the_same_outputs(setup, tmp_path):
     prog = json.loads((tmp_path / "b" / "progress_O__B8-f1.json").read_text())
     assert len(prog["committed"]) == 1
     assert (tmp_path / "b" / "vectors" / "partial_O__B8-f1__C.pt").exists()
+    assert (tmp_path / "b" / "vectors" / "partial_O__B8-f1__total_x3.pt").exists()
     run(ctx, tmp_path / "b", "B8-f1", recs)
+    pa, pb = (json.loads((tmp_path / d / "progress_O__B8-f1.json").read_text()) for d in ("a", "b"))
+    assert pa["rounding_rel"] == pb["rounding_rel"] and pa["part_sum_rel"] == pb["part_sum_rel"]
     ra = [json.loads(x) for x in open(tmp_path / "a" / "GRADROWS_O__B8-f1.jsonl")]
     rb = [json.loads(x) for x in open(tmp_path / "b" / "GRADROWS_O__B8-f1.jsonl")]
     assert ra == rb
@@ -304,7 +312,7 @@ def test_random_partition_rows_give_their_own_gradient(setup, cpu_device, tmp_pa
     actor = make_actor(setup)
     ctx = ToyCtx(actor, data)
     res = run(ctx, tmp_path, "R8-f1-s1", recs_r)
-    assert res["part_sum"] is None and list((tmp_path / "vectors").glob("O__R8-f1-s1__*.pt")) == [
+    assert res["part_sum_rel"] is None and res["rounding_rel"] < 1e-6 and list((tmp_path / "vectors").glob("O__R8-f1-s1__*.pt")) == [
         tmp_path / "vectors" / "O__R8-f1-s1__total.pt"]
     run(ctx, tmp_path, "B8-f1", row_file(rows, "B8-f1"))
     cmp = update_path.compare(vec(tmp_path, "R8-f1-s1", "total"), vec(tmp_path, "B8-f1", "total"))
