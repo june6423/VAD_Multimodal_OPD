@@ -444,6 +444,39 @@ def test_diag_order_on_the_toy(setup):
     assert res["grad_dtypes"] == ["torch.float32"]
 
 
+def test_diag_fp32_on_the_toy(setup):
+    """DIRECTIVE-005 diagnostic: on the toy, the fp32 phase and the bf16 phase run, and each part sum is near g32."""
+    diag = load("vad_grad3_diag_fp32", DIR / "diag_fp32.py")
+    rows, data = toy_rows()
+    recs = row_file(rows, "B8-f1")
+    diag.partsum.MIN_ROWS = 2
+    mrows = diag.partsum.pick_micro(recs)
+    class CastLinear(torch.nn.Linear):  # the model casts its inputs to the parameter dtype, as the embedding does
+        def forward(self, x):
+            return super().forward(x.to(self.weight.dtype)).float()
+
+    actor = make_actor(setup)
+    lin = CastLinear(H, V, bias=False)
+    lin.weight.data = actor.actor_module.weight.data.to(torch.bfloat16)
+    actor.actor_module = lin
+    ctx = ToyCtx(actor, data)
+    res = diag.diagnose(ctx, mrows, {r["traj"]: {"traj": r["traj"]} for r in recs}, ["w"], actor.actor_module)
+    for key in ("C+I", "L1+L2+L3"):
+        assert res["fp32"]["parts"][key]["vs_g32"] < 1e-6, key
+        assert res["fp32"]["parts"][key]["loss_rel_diff"] < 1e-6, key
+    assert res["fp32"]["scale3_vs_g32"] < 1e-6
+    assert res["fp32"]["grad_dtypes"] == ["torch.float32"] and res["bf16"]["grad_dtypes"] == ["torch.bfloat16"]
+    assert 0 < res["bf16"]["full_vs_g32"] < 1e-1
+    assert actor.actor_module.weight.dtype == torch.bfloat16
+
+
+def test_diag_fp32_first_rows_keeps_both_labels():
+    diag = load("vad_grad3_diag_fp32", DIR / "diag_fp32.py")
+    rows = [{"label": 0}, {"label": 0}, {"label": 1}]
+    assert diag.first_rows(rows, 2) == [{"label": 0}, {"label": 1}]
+    assert diag.first_rows(rows, 0) == rows
+
+
 def test_diag_order_reports_hooks_and_checkpointing():
     diag = load("vad_grad3_diag_order", DIR / "diag_order.py")
     m = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 1))
