@@ -15,11 +15,17 @@ forward once for each view, all on the student top-k indices, and gives the x-pl
 official O4 loss. The view keys do not change.
 Vector files: vectors/O__B8-f<f>@<view>__total.pt and vectors/O__B8-f<f>@geo__total.pt (flat fp32, G3_PARAMS.txt
 order).
+Prefetch (DIRECTIVE-VLM-VAD-VIEW-001-002 item 1): worker processes (prefetch.py, Builder) build the CPU inputs
+(grads.Context.batch without the move to the GPU) of the next micro-batches of a key in the order of run_batch, one
+job per micro-batch with all views of the key (the geo key: each view of GEO_VIEWS once). ViewContext.batch takes the
+built batch of its view and moves it to the GPU, so run_batch and the loss code do not change. PREFETCH_<tag>.json:
+the build seconds (worker) and the wait seconds (parent) of each job.
 
 Usage: python vgrads.py <repo> <COMMAND_B200.txt> <model dir> <rollouts.jsonl> <rows dir> <G3_PARAMS.txt> <views dir>
          <out dir> <key>...
 Env: STOP_AFTER_MICRO (0; exit 75 once after this many micro-batches), COMMIT_SECONDS (1800), GEO_VIEWS (comma list
-of view names; default the 8 views).
+of view names; default the 8 views), PREFETCH_WORKERS (16; 0 = build in the parent as before), PREFETCH_BUDGET (48
+row-views submitted ahead).
 """
 
 from __future__ import annotations
@@ -87,6 +93,39 @@ def make_view_context(g3):
             self.manifest = manifest
             self.view = None
             self.geo_views = geo_views()
+            self.pre = None  # iterator of prefetched jobs (start_key)
+            self.pre_log = []
+            self._cur = None
+
+        def start_key(self, pool, views: list[str], rows: list[dict], rollouts: dict, budget: float):
+            """Submit the micro-batches of a key to the workers in the order of grads.run_batch."""
+            import grads as g3m
+
+            micro = {}
+            for r in rows:
+                micro.setdefault(g3m.micro_key(r), []).append(r)
+            jobs = []
+            for k in micro:
+                ros = [rollouts[r["traj"]] for r in sorted(micro[k], key=lambda r: r["position"])]
+                jobs.append((len(ros) * len(views), "build", (views, ros)))
+            self.pre, self.pre_log, self._cur = pool.ordered(jobs, budget), [], None
+
+        def batch(self, ros: list[dict]):
+            if self.pre is None:
+                return super().batch(ros)
+            import prefetch
+            import trainer_io
+
+            trajs = [ro["traj"] for ro in ros]
+            while self._cur is None or self._cur["trajs"] != trajs:
+                try:
+                    res, build, wait = next(self.pre)
+                except StopIteration:
+                    raise RuntimeError(f"prefetch: no job for trajectories {trajs}") from None
+                self._cur = res
+                self.pre_log.append({"trajs": res["trajs"], "build_seconds": round(build, 3),
+                                     "wait_seconds": round(wait, 3)})
+            return trainer_io.to_device(prefetch.proto(self._cur["views"][self.view]), self.device)
 
         def prompt(self, index: int) -> dict:
             item = super().prompt(index)
@@ -116,6 +155,51 @@ def make_view_context(g3):
             return {**mi, GEO_KEY: [obj.view_inputs(m, "plus") for m, _ in built]}, rows_mi
 
     return ViewContext
+
+
+def make_cpu_context(g3):
+    class CPUContext(g3.Context):
+        """grads.Context without the models: the config, tokenizer, processor and dataset; batches stay on the CPU."""
+
+        def __init__(self, repo: str, command_txt: str):
+            import trainer_io
+
+            self.cfg = trainer_io.compose_a1_config(repo, command_txt)
+            self.tokenizer, self.processor = trainer_io.tokenizer_processor(self.cfg)
+            self.dataset = trainer_io.load_dataset(self.cfg, self.tokenizer, self.processor)
+            self.device = "cpu"
+            self._prompts = {}
+
+    return CPUContext
+
+
+def load_manifest(views_dir: str) -> dict:
+    return {r["row"]: r for r in map(json.loads, open(Path(views_dir) / "MANIFEST.jsonl"))}
+
+
+class Builder:
+    """Worker side of the prefetch: the CPU batch (grads.Context.batch) of a micro-batch for each view."""
+
+    PROMPT_CACHE = 16
+
+    def __init__(self, repo: str, command_txt: str, views_dir: str):
+        setup(repo)
+        import grads as g3
+
+        base = make_cpu_context(g3)
+        self.ctx = make_view_context(type("G3", (), {"Context": base}))(repo, command_txt,
+                                                                        manifest=load_manifest(views_dir))
+
+    def build(self, views: list[str], ros: list[dict]) -> dict:
+        import prefetch
+
+        if len(self.ctx._prompts) > self.PROMPT_CACHE:
+            self.ctx._prompts = {}
+        out = {}
+        for v in views:
+            self.ctx.view = v
+            out[v] = prefetch.parts(self.ctx.batch(ros))
+        return {"trajs": [ro["traj"] for ro in ros], "views": out}
 
 
 def make_geo_classes(g3, obj):
@@ -151,7 +235,7 @@ def main():
         raise SystemExit("STOP: the official forward needs VAD_PACKFIX unset")
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    manifest = {r["row"]: r for r in map(json.loads, open(Path(views_dir) / "MANIFEST.jsonl"))}
+    manifest = load_manifest(views_dir)
     removed = {r["row"] for r in json.loads((Path(views_dir) / "REMOVED.json").read_text())["removed"]}
     opts = {"stop_after": int(os.environ.get("STOP_AFTER_MICRO", "0")),
             "commit_seconds": float(os.environ.get("COMMIT_SECONDS", "1800"))}
@@ -162,6 +246,13 @@ def main():
         print(f"{keys}: all GRADROWS files exist")
         return
     rollouts = {r["traj"]: r for r in map(json.loads, open(rollouts_path))}
+    import prefetch
+
+    n_workers = prefetch.workers()
+    budget = float(os.environ.get("PREFETCH_BUDGET", "48"))
+    pool = prefetch.Pool([str(Path(repo).resolve()), str(HERE.parent / "vad_grad3"), str(HERE)], "vgrads", "Builder",
+                         (repo, command_txt, views_dir), n_workers) if n_workers > 0 else None
+    log.update(prefetch_workers=n_workers, prefetch_budget=budget)
     t0 = time.time()
     ctx = make_view_context(g3)(repo, command_txt, model_dir, g3_params, manifest=manifest)
     classes = {"view": ctx.classes, GEO: make_geo_classes(g3, obj)}
@@ -180,13 +271,23 @@ def main():
             ctx.view = view
             ctx.classes = classes[GEO if view == GEO else "view"]
             ctx._prompts = {}
+            if pool is not None:
+                ctx.start_key(pool, ctx.geo_views if view == GEO else [view], rows, rollouts, budget)
             log["results"].append(g3.run_batch(ctx, "O", k, rows, rollouts, out, opts, counter))
+            if pool is not None:
+                g3.write_json(out / f"PREFETCH_O__{k}.json", {"workers": n_workers, "budget": budget,
+                                                               "jobs": ctx.pre_log})
+                ctx.pre = None
             print(json.dumps(log["results"][-1]), flush=True)
     except g3.Stop:
         log.update(stopped_after_micro=opts["stop_after"], end=g3.now(), peak_gpu_gb=torch.cuda.max_memory_allocated() / 1e9)
         g3.append_jsonl(out / "runs.jsonl", log)
         print(f"forced stop after {opts['stop_after']} micro-batches")
+        if pool is not None:
+            pool.close()
         sys.exit(g3.STOP_EXIT)
+    if pool is not None:
+        pool.close()
     log.update(end=g3.now(), peak_gpu_gb=torch.cuda.max_memory_allocated() / 1e9)
     g3.append_jsonl(out / "runs.jsonl", log)
 

@@ -90,7 +90,7 @@ if [[ "$pilot" == 1 ]]; then
   [[ -f "$out/PILOT_BUILD.json" ]] || "$py" $vv/vpilot.py select "$parquet" "$src" "$base" "$r053" \
     "$out/M0/PILOT_PROMPTS.json" "$out/A1_80/PILOT_PROMPTS.json" "$out" >> "$log" 2>&1 || exit 1
   build_rows=("$out/PILOT_BUILD.json") fresh_rows=("$out/PILOT_FRESH.json") held="$out/PILOT_HELDOUT.json"
-  ls_env=(DIRECTIONS=MEAN__V ALPHAS=1 LS_PER_SET=10)
+  ls_env=(DIRECTIONS=MEAN__V ALPHAS=1 LS_PER_SET=10 LS_FLOOR_PASS=1)
   views2=(p1-z2.0 p0.30-z3.0)
 fi
 GEO_VIEWS="$(IFS=,; echo "${views2[*]}")"

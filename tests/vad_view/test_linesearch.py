@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 import sys
 from pathlib import Path
@@ -79,11 +78,53 @@ def test_summary_floor_marks_and_bf16():
     assert fb["argmax_disagree"] == 0
     with pytest.raises(SystemExit):
         ls.summarize(points, lines, metas, bf16[1:])
+    # without the floor pass (FULL): no floor and no marks
+    pts = [p for p in points if p[0] != "a0-r2"]
+    res = ls.summarize(pts, {p: v for p, v in lines.items() if p != "a0-r2"}, metas, bf16)
+    assert res["floor"] is None and res["item_floor"] is None
+    t = {r["point"]: r for r in res["table"]}
+    assert t["MEAN__V@a4"]["sets"]["A"]["below_2x_floor"] is None
+    assert t["MEAN__V@a4"]["sets"]["A"]["change"]["mean_log_R"] == pytest.approx(0.1)
 
 
-def test_pending_resume(tmp_path):
-    items = [{"index": i} for i in range(5)]
-    path = tmp_path / "p.jsonl"
-    assert ls.pending(path, items) == items
-    path.write_text("".join(json.dumps({"index": i}) + "\n" for i in (0, 3)))
-    assert [it["index"] for it in ls.pending(path, items)] == [1, 2, 4]
+def test_points_without_floor_pass():
+    pts = ls.point_names([f"MEAN__{i}" for i in range(10)], [1, 4, 16], floor_pass=False)
+    assert len(pts) == 31 and pts[0] == ("a0-r1", None, 0.0) and "a0-r2" not in [p for p, _, _ in pts]
+
+
+class FakeInner:
+    def __init__(self):
+        self.calls = 0
+
+    def get_image_features(self, pixel_values, image_grid_thw=None, **kwargs):
+        import torch
+        from transformers.modeling_outputs import BaseModelOutputWithPooling
+
+        self.calls += 1
+        x = pixel_values.sum(-1, keepdim=True) * torch.ones(1, 3)
+        n = int(image_grid_thw.prod(-1).sum())
+        return BaseModelOutputWithPooling(last_hidden_state=x, pooler_output=torch.split(x, [n]))
+
+
+def test_vision_cache():
+    import torch
+
+    model = type("M", (), {})()
+    model.model = FakeInner()
+    inner = model.model
+    vc = ls.VisionCache(model)
+    pv, grid = torch.arange(8.0).view(4, 2), torch.tensor([[1, 2, 2]])
+    ref = inner.get_image_features.__self__ if hasattr(inner.get_image_features, "__self__") else None
+    assert ref is vc
+    n = vc.put(7, pv, grid)
+    assert n == 4 * 3 * 4 and inner.calls == 1
+    vc.current = 7
+    got = inner.get_image_features(torch.empty(0), grid, return_dict=True).pooler_output
+    assert inner.calls == 1 and torch.equal(torch.cat(got), pv.sum(-1, keepdim=True) * torch.ones(1, 3))
+    with pytest.raises(RuntimeError):
+        inner.get_image_features(torch.empty(0), torch.tensor([[1, 2, 4]]))
+    vc.current = None
+    inner.get_image_features(pv, grid)
+    assert inner.calls == 2
+    vc.clear()
+    assert vc.cache == {} and vc.bytes == 0

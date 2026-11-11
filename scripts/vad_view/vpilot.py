@@ -8,15 +8,23 @@ select: the pilot inputs.
     dataset rows of the stage 2 pilot prompts (PILOT_PROMPTS.json of vad_grad3 pilot.py select, each checkpoint).
 project: the FULL wall time and the peak disk from the pilot outputs (PROJECTION.json). Each stage of TIMES.jsonl:
   FULL seconds = fixed part (pilot stage seconds - pilot work seconds: model loads, setup) + FULL work seconds.
-  Work: views build: all seconds x 6241 / build rows. fresh: mean seconds per FRESH line x 6241. prefix_step<s>: mean
-    seconds per line x the trajectories of the step's rollouts.jsonl. stats1: seconds x 6241 / fresh rows.
-    vgrads_<ck>: (the largest seconds per token of the pilot view keys (inputs, forward, backward, scale-3 backward of
-    the progress files) x 8 views + the FULL geo rate) x the FULL B8 tokens (rows_full/) + the mean batch-end seconds x
-    (32 + 4). FULL geo rate (geo_rate_full): the pilot geo rate + (8 - pilot geo views) x the cost of one added view,
-    (pilot geo rate - the smallest view-key rate) / (pilot geo views - 1). One geo key per fold.
+  Warm-up (DIRECTIVE-VLM-VAD-VIEW-001-002 prefetch): a line or job whose wait is more than its build seconds + 1 s
+    waited for the worker start; its wait - build is a fixed part, not work (warm_excess).
+  Work: views build: all seconds x 6241 / build rows. fresh: (seconds of the FRESH lines - warm-up) / lines x 6241.
+    prefix_step<s>: the same per line x the trajectories of the step's rollouts.jsonl. stats1: seconds x 6241 / fresh
+    rows.
+    vgrads_<ck>: (the largest FULL rate of the pilot view keys x 8 views + the FULL geo rate) x the FULL B8 tokens
+    (rows_full/) + the mean batch-end seconds x (32 + 4). Rate of a key: the seconds per token of its micro-batches
+    (inputs wait, forward, backward, scale-3 backward of the progress files, minus warm-up); FULL rate = the larger of
+    the rate and the worker rate (build seconds per token of the PREFETCH jobs / workers). FULL geo rate: the larger of
+    geo_rate_full (the pilot geo rate + (8 - pilot geo views) x the cost of one added view, (pilot geo rate - the
+    smallest view-key rate) / (pilot geo views - 1)) and the geo worker rate x 8 / pilot geo views. One geo key per
+    fold.
     heldout_<ck>: mean seconds per set-A item x 500 + per set-B item x 500 (HELDOUT_VALUES.jsonl).
-    gram_<ck>: seconds x (32 + 4 + 8 + 2) / pilot vectors. linesearch_<ck>: mean seconds per item line x (2 + 10 x 3)
-    points x 1000 items + the pilot direction setup seconds (stage - lines - model load) / pilot directions x 10.
+    gram_<ck>: seconds x (32 + 4 + 8 + 2) / pilot vectors. linesearch_<ck>: (mean input wait + vision seconds per item
+    of VISION.jsonl) x 1000 items + mean seconds per cached item line (a0-r2 lines run without the cache and do not
+    count) x (1 + 10 x 3) points x 1000 items + the pilot direction setup seconds (stage - lines - vision - model load)
+    / pilot directions x 10 x FULL chunks (mean vision bytes per item x 1000 / VCACHE_GB, rounded up).
     Other stages (views fit, held-out select, displacement, rows, remove, stats2): the pilot seconds.
   Peak disk (one checkpoint at a time; vgram.py remove runs before the next checkpoint): (32 + 4 geo + 8 vectors + 10
     fold means + 2 partial accumulators + 4 displacements) x 4 x elements bytes, plus the view images of the pilot x
@@ -30,6 +38,7 @@ Usage: python vpilot.py select <train_vad.parquet> <train.jsonl> <model dir> <ro
 from __future__ import annotations
 
 import json
+import math
 import random
 import sys
 from pathlib import Path
@@ -43,7 +52,7 @@ ELEMENTS = 3569090560
 FULL_VIEWS, FOLDS, PARTS = 8, 4, 4
 FULL_HELDOUT = {"A": 500, "B": 500}
 FULL_DIRECTIONS = 10  # 8 views, V, geo
-FULL_POINTS = 2 + FULL_DIRECTIONS * 3
+FULL_POINTS = 1 + FULL_DIRECTIONS * 3  # a0-r2 runs in the pilot only (DIRECTIVE-VLM-VAD-VIEW-001-002 item 5)
 FULL_GEO = FOLDS  # one geo key per fold (Definition 9.5)
 FULL_FOLD_MEANS = FULL_VIEWS + 2  # MEAN__<view>, MEAN__V, MEAN__geo
 CHECKPOINTS = ("M0", "A1_80")
@@ -113,16 +122,35 @@ def mean(xs: list[float]) -> float:
     return sum(xs) / len(xs)
 
 
-def view_rates(ck_dir: Path) -> dict[str, float]:
-    """Seconds per token of each pilot view key from the progress files."""
-    tok, sec = {}, {}
+def warm_excess(recs: list[dict]) -> float:
+    """Seconds of worker start in lines or jobs with wait_seconds and build_seconds: sum of wait - build where the
+    wait is more than build + 1 s."""
+    return sum(r["wait_seconds"] - r["build_seconds"] for r in recs
+               if r.get("wait_seconds") is not None and r["wait_seconds"] > r["build_seconds"] + 1)
+
+
+def view_rates(ck_dir: Path) -> tuple[dict[str, float], dict[str, float]]:
+    """(seconds per token of each pilot view key from the progress files, minus the warm-up of its PREFETCH file;
+    worker build seconds per token / workers of each key from its PREFETCH file)."""
+    tokens = {}
+    for f in sorted((ck_dir / "rows").glob("ROWS_B8-f*.jsonl")):
+        for x in open(f):
+            r = json.loads(x)
+            tokens[r["traj"]] = r["total_tokens"]
+    tok, sec, cpu_sec, cpu_tok = {}, {}, {}, {}
     for p in sorted(ck_dir.glob("progress_O__B8-f*@*.json")):
         view = p.stem.split("@", 1)[1]
         for m in json.loads(p.read_text())["micro"]:
             tok[view] = tok.get(view, 0) + m["tokens"]
             sec[view] = sec.get(view, 0.0) + (m["seconds_inputs"] + m["seconds_forward"] + m["seconds_backward"]
                                               + m["seconds_rounding"])
-    return {v: sec[v] / tok[v] for v in tok}
+        pre = ck_dir / p.name.replace("progress_", "PREFETCH_")
+        if pre.exists():
+            d = json.loads(pre.read_text())
+            sec[view] -= warm_excess(d["jobs"])
+            cpu_sec[view] = cpu_sec.get(view, 0.0) + sum(j["build_seconds"] for j in d["jobs"]) / d["workers"]
+            cpu_tok[view] = cpu_tok.get(view, 0) + sum(tokens[t] for j in d["jobs"] for t in j["trajs"])
+    return {v: sec[v] / tok[v] for v in tok}, {v: cpu_sec[v] / cpu_tok[v] for v in cpu_sec}
 
 
 def geo_rate_full(rates: dict[str, float], pilot_geo_views: int) -> float:
@@ -163,12 +191,12 @@ def project(argv: list[str]):
     st["views_fit"] = scaled(sec["views_fit"], 0.0, 0.0)
     st["views_build"] = scaled(sec["views_build"], sec["views_build"], sec["views_build"] * FULL_ROWS / len(build))
     fresh = lines(out / "stage1" / "FRESH.jsonl")
-    work = sum(x["seconds"] for x in fresh)
+    work = sum(x["seconds"] for x in fresh) - warm_excess(fresh)
     st["fresh"] = scaled(sec["fresh"], work, work / len(fresh) * FULL_ROWS)
     for s in STEPS:
         pre = lines(out / "stage1" / f"PREFIX_step{s}.jsonl")
         n_full = sum(1 for _ in open(rollouts_dir / f"step{s}" / "rollouts.jsonl"))
-        work = sum(x["seconds"] for x in pre)
+        work = sum(x["seconds"] for x in pre) - warm_excess(pre)
         st[f"prefix_step{s}"] = scaled(sec[f"prefix_step{s}"], work, work / len(pre) * n_full)
     st["stats1"] = scaled(sec["stats1"], sec["stats1"], sec["stats1"] * FULL_ROWS / fresh_rows)
     for name in ("heldout_select", "displacement", "stats2"):
@@ -176,20 +204,22 @@ def project(argv: list[str]):
     for ck in CHECKPOINTS:
         d = out / ck
         st[f"rows_{ck}"] = scaled(sec[f"rows_{ck}"], 0.0, 0.0)
-        rates = view_rates(d)
+        rates, cpu = view_rates(d)
         b8 = full_b8_tokens(d / "rows_full")
         prog = [json.loads(p.read_text()) for p in sorted(d.glob("progress_O__B8-f*@*.json"))]
         micro = sum(m["seconds_inputs"] + m["seconds_forward"] + m["seconds_backward"] + m["seconds_rounding"]
                     for pr in prog for m in pr["micro"])
+        warm = sum(warm_excess(json.loads(p.read_text())["jobs"]) for p in sorted(d.glob("PREFETCH_O__B8-f*@*.json")))
         runs = lines(d / "runs.jsonl")
         ends = [r["seconds_end"] for run in runs for r in run.get("results", []) if "seconds_end" in r]
         pilot_geo_views = len(next(run["geo_views"] for run in runs if "geo_views" in run))
-        geo_full = geo_rate_full(rates, pilot_geo_views)
-        view_max = max(r for v, r in rates.items() if v != "geo")
-        st[f"vgrads_{ck}"] = {**scaled(sec[f"vgrads_{ck}"], micro + sum(ends),
+        geo_full = max(geo_rate_full(rates, pilot_geo_views), cpu.get("geo", 0.0) * FULL_VIEWS / pilot_geo_views)
+        view_max = max(max(r, cpu.get(v, 0.0)) for v, r in rates.items() if v != "geo")
+        st[f"vgrads_{ck}"] = {**scaled(sec[f"vgrads_{ck}"], micro - warm + sum(ends),
                                        (view_max * FULL_VIEWS + geo_full) * b8
                                        + mean(ends) * (FULL_VIEWS + 1) * FOLDS),
-                              "rates_seconds_per_token": rates, "geo_rate_full": geo_full,
+                              "rates_seconds_per_token": rates, "worker_rates_seconds_per_token": cpu,
+                              "warm_up_seconds": warm, "geo_rate_full": geo_full,
                               "pilot_geo_views": pilot_geo_views, "full_b8_tokens": b8,
                               "geo_full_seconds": geo_full * b8}
         hv = lines(d / "HELDOUT_VALUES.jsonl")
@@ -199,15 +229,25 @@ def project(argv: list[str]):
         n_pilot = len(json.loads((d / f"GRAM_{ck}.json").read_text())["names"])
         st[f"gram_{ck}"] = scaled(sec[f"gram_{ck}"], sec[f"gram_{ck}"],
                                   sec[f"gram_{ck}"] * (FULL_VIEWS * FOLDS + FULL_GEO + 2 * PARTS + 2) / n_pilot)
-        ls_lines = [x for p in sorted((d / "linesearch" / "points").glob("*.jsonl")) for x in lines(p)]
-        ls_load = max(r["load_seconds"] for r in lines(d / "linesearch" / "runs.jsonl") if "load_seconds" in r)
+        ls_dir = d / "linesearch"
+        all_lines = [x for p in sorted((ls_dir / "points").glob("*.jsonl")) for x in lines(p)]
+        ls_lines = [x for x in all_lines if x.get("vision_cache")]
+        vis = lines(ls_dir / "VISION.jsonl")
+        ls_runs = lines(ls_dir / "runs.jsonl")
+        ls_load = max(r["load_seconds"] for r in ls_runs if "load_seconds" in r)
+        vcache = max(r.get("vcache_gb", 40.0) for r in ls_runs) * 1e9
+        n_items = sum(FULL_HELDOUT.values())
         work = sum(x["seconds"] for x in ls_lines)
-        n_dir = len(list((d / "linesearch" / "points").glob("*.direction.json")))
-        setup = max(sec[f"linesearch_{ck}"] - work - ls_load, 0.0)
-        st[f"linesearch_{ck}"] = {**scaled(sec[f"linesearch_{ck}"], work + setup,
-                                           work / len(ls_lines) * FULL_POINTS * sum(FULL_HELDOUT.values())
-                                           + setup / n_dir * FULL_DIRECTIONS),
-                                  "load_seconds": ls_load, "setup_seconds_pilot": setup, "pilot_directions": n_dir}
+        vis_work = sum(x["wait_seconds"] + x["vision_seconds"] for x in vis)
+        n_dir = len(list((ls_dir / "points").glob("*.direction.json")))
+        setup = max(sec[f"linesearch_{ck}"] - sum(x["seconds"] for x in all_lines) - vis_work - ls_load, 0.0)
+        chunks = max(math.ceil(mean([x["bytes"] for x in vis]) * n_items / vcache), 1)
+        st[f"linesearch_{ck}"] = {**scaled(sec[f"linesearch_{ck}"], work + vis_work + setup,
+                                           work / len(ls_lines) * FULL_POINTS * n_items + vis_work / len(vis) * n_items
+                                           + setup / n_dir * FULL_DIRECTIONS * chunks),
+                                  "load_seconds": ls_load, "setup_seconds_pilot": setup, "pilot_directions": n_dir,
+                                  "vision_seconds_per_item": vis_work / len(vis),
+                                  "cached_line_seconds": work / len(ls_lines), "full_chunks": chunks}
         st[f"remove_{ck}"] = scaled(sec[f"remove_{ck}"], 0.0, 0.0)
     missing = sorted(set(sec) - set(st))
     res = {"elements": ELEMENTS, "stages": st, "stages_not_projected": {k: sec[k] for k in missing}}

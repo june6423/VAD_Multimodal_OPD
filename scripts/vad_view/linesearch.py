@@ -20,10 +20,20 @@ floor |a0-r2 - a0-r1| of each quantity and a mark when |change| < 2 x floor (dir
 difference fp32 (a0-r1) minus bf16 (HELDOUT_VALUES.jsonl of heldout.py grad, the A1 actor forward) on the same items
 (directive item 4); for each direction the norm ||D Gbar|| and its value from the M2 Gram file (consistency check).
 
+Speed-up (DIRECTIVE-VLM-VAD-VIEW-001-002 items 3 and 5): the items run in chunks. Each item of a chunk is processed
+once (the processor inputs), and its vision output (model.model.get_image_features at theta0; the vision tower is not
+in G3_PARAMS.txt, so it is the same at every point) is computed once and kept on the GPU. Then every point runs on the
+chunk: the forward gets the cached vision output in place of a new vision forward (VisionCache), so the language
+model forward and the values do not change. A chunk closes when the cached vision outputs reach VCACHE_GB.
+a0-r2 (the second alpha-0 pass) runs only with LS_FLOOR_PASS=1 (the pilot); it processes each item again and runs
+the vision tower again (no cache), so its floor also checks the cache. Without a0-r2 the floor values are null.
+VISION.jsonl: one line per item and chunk (seconds of the input wait and the vision forward, image tokens, bytes).
+
 Usage: python linesearch.py <repo> <model dir> <G3_PARAMS.txt> <V file> <ck dir> <HELDOUT.json> <bench dir>
          <HELDOUT_VALUES.jsonl> <checkpoint> <out dir>
 Env: DIRECTIONS (all, or comma list of MEAN names such as MEAN__V), ALPHAS (1,4,16), LS_PER_SET (0 = all items; else
-the first n items of set A and of set B), STOP_AFTER (0; exit 75 once after this many new item lines), PREFETCH (4).
+the first n items of set A and of set B), STOP_AFTER (0; exit 75 once after this many new item lines), PREFETCH (4),
+LS_FLOOR_PASS (0), VCACHE_GB (40).
 """
 
 from __future__ import annotations
@@ -43,9 +53,46 @@ STEPS = 80
 QUANTITIES = ("mean_log_R", "mean_m", "accuracy")
 
 
-def point_names(directions: list[str], alphas: list[float]) -> list[tuple[str, str | None, float]]:
-    pts = [("a0-r1", None, 0.0), ("a0-r2", None, 0.0)]
+def point_names(directions: list[str], alphas: list[float], floor_pass: bool = True) -> list[tuple[str, str | None, float]]:
+    pts = [("a0-r1", None, 0.0)] + ([("a0-r2", None, 0.0)] if floor_pass else [])
     return pts + [(f"{d}@a{a:g}", d, a) for d in directions for a in alphas]
+
+
+class VisionCache:
+    """model.model.get_image_features with a cache: for the item `current` it returns the vision output kept by
+    put() (the same tensors the call gives at any point, because the vision tower is not changed); with current None
+    it calls the model function."""
+
+    def __init__(self, model):
+        self.inner = model.model
+        self.orig = model.model.get_image_features
+        self.cache: dict = {}
+        self.bytes = 0
+        self.current = None
+        self.inner.get_image_features = self.get
+
+    def get(self, pixel_values, image_grid_thw=None, **kwargs):
+        if self.current is None:
+            return self.orig(pixel_values, image_grid_thw, **kwargs)
+        from transformers.modeling_outputs import BaseModelOutputWithPooling
+        import torch
+
+        grid, embeds = self.cache[self.current]
+        if not torch.equal(grid, image_grid_thw):
+            raise RuntimeError(f"vision cache: item {self.current} has another image_grid_thw")
+        return BaseModelOutputWithPooling(pooler_output=embeds)
+
+    def put(self, index: int, pixel_values, image_grid_thw) -> int:
+        """Run the vision tower once for the item and keep its output; returns the bytes kept."""
+        out = self.orig(pixel_values, image_grid_thw, return_dict=True)
+        embeds = tuple(out.pooler_output)
+        n = sum(e.numel() * e.element_size() for e in embeds)
+        self.cache[index] = (image_grid_thw, embeds)
+        self.bytes += n
+        return n
+
+    def clear(self):
+        self.cache, self.bytes, self.current = {}, 0, None
 
 
 def items_of(sel: dict, per_set: int) -> list[dict]:
@@ -86,11 +133,14 @@ def summarize(points: list[tuple[str, str | None, float]], lines: dict[str, list
               bf16: list[dict]) -> dict:
     """The LINESEARCH table from the item lines of each point (lines[point]) and the bf16 values."""
     means = {p: set_means(lines[p]) for p, _, _ in points}
-    base, rep = means["a0-r1"], means["a0-r2"]
-    floor = {s: {q: abs(rep[s][q] - base[s][q]) for q in QUANTITIES} for s in base}
+    base = means["a0-r1"]
     by1 = {x["index"]: x for x in lines["a0-r1"]}
-    by2 = {x["index"]: x for x in lines["a0-r2"]}
-    item_floor = {q: max(abs(by1[i][q] - by2[i][q]) for i in by1) for q in ("log_R", "m")}
+    floor = item_floor = None
+    if "a0-r2" in means:
+        rep = means["a0-r2"]
+        floor = {s: {q: abs(rep[s][q] - base[s][q]) for q in QUANTITIES} for s in base}
+        by2 = {x["index"]: x for x in lines["a0-r2"]}
+        item_floor = {q: max(abs(by1[i][q] - by2[i][q]) for i in by1) for q in ("log_R", "m")}
     bfi = {x["index"]: x for x in bf16 if x["index"] in by1}
     if set(bfi) != set(by1):
         raise SystemExit(f"STOP: HELDOUT_VALUES.jsonl lacks {len(set(by1) - set(bfi))} line-search items")
@@ -107,19 +157,14 @@ def summarize(points: list[tuple[str, str | None, float]], lines: dict[str, list
         for s, v in means[p].items():
             ch = {q: v[q] - base[s][q] for q in QUANTITIES}
             row["sets"][s] = {**v, "change": ch,
-                              "below_2x_floor": {q: abs(ch[q]) < 2 * floor[s][q] for q in QUANTITIES}}
+                              "below_2x_floor": {q: abs(ch[q]) < 2 * floor[s][q] for q in QUANTITIES}
+                              if floor is not None else None}
         table.append(row)
     return {"floor": floor, "item_floor": item_floor, "fp32_minus_bf16_alpha0": fp32_vs_bf16, "table": table}
 
 
 def done_items(path: Path) -> list[dict]:
     return [json.loads(x) for x in open(path)] if path.exists() else []
-
-
-def pending(path: Path, items: list[dict]) -> list[dict]:
-    """The items without a line in the point file (resume)."""
-    done = {x["index"] for x in done_items(path)}
-    return [it for it in items if it["index"] not in done]
 
 
 def load_model(model_dir: str):
@@ -162,14 +207,16 @@ def main():
     if not set(directions) <= set(found):
         raise SystemExit(f"STOP: directions {sorted(set(directions) - set(found))} have no MEAN file in {ck_dir}")
     alphas = [float(a) for a in os.environ.get("ALPHAS", "1,4,16").split(",")]
-    points = point_names(directions, alphas)
+    floor_pass = os.environ.get("LS_FLOOR_PASS", "0") == "1"
+    points = point_names(directions, alphas, floor_pass)
     sel = json.loads(Path(heldout_json).read_text())
     items = items_of(sel, int(os.environ.get("LS_PER_SET", "0")))
     bf16 = done_items(Path(bf16_values))
     tokens_bf16 = {x["index"]: x["prompt_tokens"] for x in bf16}
     stop_after = int(os.environ.get("STOP_AFTER", "0"))
     log = {"checkpoint": checkpoint, "model_dir": model_dir, "start": g3.now(), "step_norm_s": s,
-           "delta_norm": s * STEPS, "directions": directions, "alphas": alphas, "items": len(items)}
+           "delta_norm": s * STEPS, "directions": directions, "alphas": alphas, "items": len(items),
+           "floor_pass": floor_pass, "vcache_gb": float(os.environ.get("VCACHE_GB", "40"))}
 
     t0 = time.time()
     model = load_model(model_dir)
@@ -228,11 +275,14 @@ def main():
                        "rel_diff": abs(norm - expect) / expect})
         return u
 
-    for p_name, dname, alpha in points:
-        path = out / "points" / f"{p_name}.jsonl"
-        todo = pending(path, items)
-        if not todo:
-            continue
+    vc = VisionCache(model)
+    budget = float(os.environ.get("VCACHE_GB", "40")) * 1e9
+    placeholder = torch.empty(0)  # pixel_values: the cached vision output replaces the vision forward
+    done = {p: {x["index"] for x in done_items(out / "points" / f"{p}.jsonl")} for p, _, _ in points}
+    log["chunks"] = []
+
+    def set_point(p_name: str, dname: str | None, alpha: float):
+        nonlocal current
         with torch.no_grad():
             if dname is None:
                 for p, t in zip(params, theta0):
@@ -250,34 +300,82 @@ def main():
         meta = {"point": p_name, "direction": dname, "alpha": alpha, "step": c,
                 "bf16_changed_fraction": changed / log["elements"], "bf16_changed": changed}
         g3.write_json(out / "points" / f"{p_name}.meta.json", meta)
-        with open(path, "a") as f:
-            for it, inp in prepared(todo):
-                t1 = time.time()
-                n_tok = int(inp["input_ids"].shape[1])
-                if tokens_bf16.get(it["index"]) not in (None, n_tok):
-                    raise SystemExit(f"STOP: item {it['index']}: {n_tok} prompt tokens, HELDOUT_VALUES "
-                                     f"{tokens_bf16[it['index']]}")
-                with torch.no_grad():
-                    logits = model(**{k: v.cuda() for k, v in inp.items()}, use_cache=False,
-                                   logits_to_keep=1).logits[0, -1]
-                    lp = torch.log_softmax(logits.double(), -1)
-                    lt = lp[ids[it["index"]]]
-                    log_r, log_m = heldout.letter_values(lt, it["letters"].index(it["answer"]))
-                vals = [float(x) for x in lt]
-                if not all(math.isfinite(x) for x in vals):
-                    raise SystemExit(f"STOP: non-finite letter log probability for item {it['index']} at {p_name}")
-                best = max(range(len(vals)), key=lambda i: (vals[i], -i))
-                f.write(json.dumps({"index": it["index"], "set": it["set"], "letter_logp": vals,
-                                    "log_R": float(log_r), "m": math.exp(float(log_m)),
-                                    "correct": it["letters"][best] == it["answer"], "prompt_tokens": n_tok,
-                                    "seconds": round(time.time() - t1, 3)}) + "\n")
-                f.flush()
-                count[0] += 1
-                if stop_after and count[0] == stop_after:
-                    log.update(stopped_after=stop_after, end=g3.now())
-                    g3.append_jsonl(out / "runs.jsonl", log)
-                    print(f"forced stop after {stop_after} lines", flush=True)
-                    sys.exit(STOP_EXIT)
+
+    def measure(f, p_name: str, it: dict, inp: dict, cached: bool):
+        t1 = time.time()
+        n_tok = int(inp["input_ids"].shape[1])
+        if tokens_bf16.get(it["index"]) not in (None, n_tok):
+            raise SystemExit(f"STOP: item {it['index']}: {n_tok} prompt tokens, HELDOUT_VALUES "
+                             f"{tokens_bf16[it['index']]}")
+        with torch.no_grad():
+            if cached:
+                vc.current = it["index"]
+                args = {k: (placeholder if k == "pixel_values" else v.cuda()) for k, v in inp.items()}
+            else:
+                vc.current = None
+                args = {k: v.cuda() for k, v in inp.items()}
+            logits = model(**args, use_cache=False, logits_to_keep=1).logits[0, -1]
+            vc.current = None
+            lp = torch.log_softmax(logits.double(), -1)
+            lt = lp[ids[it["index"]]]
+            log_r, log_m = heldout.letter_values(lt, it["letters"].index(it["answer"]))
+        vals = [float(x) for x in lt]
+        if not all(math.isfinite(x) for x in vals):
+            raise SystemExit(f"STOP: non-finite letter log probability for item {it['index']} at {p_name}")
+        best = max(range(len(vals)), key=lambda i: (vals[i], -i))
+        f.write(json.dumps({"index": it["index"], "set": it["set"], "letter_logp": vals,
+                            "log_R": float(log_r), "m": math.exp(float(log_m)),
+                            "correct": it["letters"][best] == it["answer"], "prompt_tokens": n_tok,
+                            "vision_cache": cached, "seconds": round(time.time() - t1, 3)}) + "\n")
+        f.flush()
+        done[p_name].add(it["index"])
+        count[0] += 1
+        if stop_after and count[0] == stop_after:
+            log.update(stopped_after=stop_after, end=g3.now())
+            g3.append_jsonl(out / "runs.jsonl", log)
+            print(f"forced stop after {stop_after} lines", flush=True)
+            sys.exit(STOP_EXIT)
+
+    def run_chunk(chunk: list[tuple[dict, dict]], k: int):
+        t2 = time.time()
+        for p_name, dname, alpha in points:
+            todo = [(it, inp) for it, inp in chunk if it["index"] not in done[p_name]]
+            if not todo:
+                continue
+            set_point(p_name, dname, alpha)
+            with open(out / "points" / f"{p_name}.jsonl", "a") as f:
+                if p_name == "a0-r2":  # no cache: process the items again and run the vision tower again
+                    for it, inp in prepared([it for it, _ in todo]):
+                        measure(f, p_name, it, inp, cached=False)
+                else:
+                    for it, inp in todo:
+                        measure(f, p_name, it, inp, cached=True)
+        log["chunks"].append({"chunk": k, "items": len(chunk), "vision_bytes": vc.bytes,
+                              "points_seconds": round(time.time() - t2, 1)})
+        vc.clear()
+        torch.cuda.empty_cache()
+
+    todo_any = [it for it in items if any(it["index"] not in done[p] for p, _, _ in points)]
+    chunk, k = [], 0
+    with open(out / "VISION.jsonl", "a") as vf:
+        t_wait = time.time()
+        for it, inp in prepared(todo_any):
+            t3 = time.time()
+            with torch.no_grad():
+                n = vc.put(it["index"], inp["pixel_values"].cuda(), inp["image_grid_thw"].cuda())
+            t4 = time.time()
+            vf.write(json.dumps({"index": it["index"], "chunk": k, "wait_seconds": round(t3 - t_wait, 3),
+                                 "vision_seconds": round(t4 - t3, 3), "prompt_tokens": int(inp["input_ids"].shape[1]),
+                                 "image_tokens": int(inp["image_grid_thw"].prod(-1).sum()) // 4,
+                                 "bytes": n}) + "\n")
+            vf.flush()
+            chunk.append((it, {key: v for key, v in inp.items() if key != "pixel_values"} | {"pixel_values": None}))
+            if vc.bytes >= budget:
+                run_chunk(chunk, k)
+                chunk, k = [], k + 1
+            t_wait = time.time()
+        if chunk:
+            run_chunk(chunk, k)
     pool.shutdown()
     lines = {p: done_items(out / "points" / f"{p}.jsonl") for p, _, _ in points}
     metas = {p: json.loads((out / "points" / f"{p}.meta.json").read_text()) for p, _, _ in points}

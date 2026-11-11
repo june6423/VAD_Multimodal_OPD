@@ -59,7 +59,28 @@ def test_geo_rate_full():
     assert vpilot.geo_rate_full(rates, 2) == pytest.approx(4.5)
     assert vpilot.geo_rate_full(rates, 8) == pytest.approx(1.5)
     assert vpilot.geo_rate_full({"a": 2.0, "geo": 1.0}, 2) == pytest.approx(1.0)
-    assert vpilot.FULL_POINTS == 32 and vpilot.FULL_DIRECTIONS == 10
+    assert vpilot.FULL_POINTS == 31 and vpilot.FULL_DIRECTIONS == 10
+
+
+def test_warm_excess():
+    recs = [{"wait_seconds": 30.0, "build_seconds": 2.0}, {"wait_seconds": 0.5, "build_seconds": 2.0},
+            {"wait_seconds": 2.8, "build_seconds": 2.0}, {"seconds": 1.0}]
+    assert vpilot.warm_excess(recs) == pytest.approx(28.0)
+
+
+def test_view_rates_with_prefetch(tmp_path):
+    (tmp_path / "rows").mkdir()
+    (tmp_path / "rows" / "ROWS_B8-f1.jsonl").write_text(
+        "".join(json.dumps({"traj": t, "total_tokens": 100}) + "\n" for t in range(4)))
+    micro = [{"tokens": 200, "seconds_inputs": w, "seconds_forward": 1.0, "seconds_backward": 0.5,
+              "seconds_rounding": 0.5} for w in (21.0, 1.0)]
+    (tmp_path / "progress_O__B8-f1@a.json").write_text(json.dumps({"micro": micro}))
+    jobs = [{"trajs": [0, 1], "build_seconds": 4.0, "wait_seconds": 21.0},
+            {"trajs": [2, 3], "build_seconds": 4.0, "wait_seconds": 1.0}]
+    (tmp_path / "PREFETCH_O__B8-f1@a.json").write_text(json.dumps({"workers": 4, "jobs": jobs}))
+    rates, cpu = vpilot.view_rates(tmp_path)
+    assert rates["a"] == pytest.approx((21 + 2 + 1 + 2 - 17) / 400)  # micro seconds 23 + 3, warm-up 21 - 4
+    assert cpu["a"] == pytest.approx(8 / 4 / 400)
 
 
 def test_stage1_resume_helpers(tmp_path, monkeypatch):
