@@ -1,13 +1,15 @@
 #!/bin/bash
-# HANDOFF-VLM-VAD-VIEW-001-R2 Part B items 2 and 4 (PILOT=1: Part A item 10) with DIRECTIVE-VLM-VAD-VIEW-001-001.
+# HANDOFF-VLM-VAD-VIEW-001-R3 Part B items 2 and 4 (PILOT=1: Part A item 10) with DIRECTIVE-VLM-VAD-VIEW-001-001.
 # One GPU. A restart resumes: each stage skips its finished work (done files, output lines, progress files).
 # Stage 1: views.py fit and build (views/), stage1.py fresh and prefix (stage1/), stats1.py -> STATS_VIEW1.json, then
 #   STAGE1_DONE.txt (ET fetches the stage 1 outputs and sends STATUS to DT; the script continues).
 # Stage 2: heldout.py select -> HELDOUT.json; grads.py displacement (vad_grad3, unchanged); for M0 and A1_80:
-#   batches.py -> <ck>/rows/, vgrads.py (keys B8-f<f>@<view>), heldout.py grad, vgram.py gram, linesearch.py (fp32),
+#   batches.py -> <ck>/rows/, vgrads.py (keys B8-f<f>@<view> and B8-f<f>@geo, the geometric pool of the views of
+#   GEO_VIEWS = the stage 2 views), heldout.py grad, vgram.py gram, linesearch.py (fp32),
 #   vgram.py remove; then stats2.py -> STATS_VIEW2.json; then the displacement vectors are removed.
 # PILOT=1: pilot.py select (vad_grad3: 2 folds x 6 prompts with the longest-response prompt) for each checkpoint,
-#   vpilot.py select (40 fresh rows, 20 trajectories per step, the view rows), views v0 and p0.30-z3.0, held-out
+#   vpilot.py select (40 fresh rows, 20 trajectories per step, the view rows), views v0 and p0.30-z3.0 and the
+#   geometric pool of these 2 views, held-out
 #   subset of 2 parts x 10 items and 10 set-B items, a forced stop after one line (stage 1 fresh) and after one
 #   micro-batch (first checkpoint vgrads) with a resume, the line search on MEAN__V, alpha 1, 10 + 10 items, and
 #   vpilot.py project -> PROJECTION.json.
@@ -91,6 +93,9 @@ if [[ "$pilot" == 1 ]]; then
   ls_env=(DIRECTIONS=MEAN__V ALPHAS=1 LS_PER_SET=10)
   views2=(p1-z2.0 p0.30-z3.0)
 fi
+GEO_VIEWS="$(IFS=,; echo "${views2[*]}")"
+export GEO_VIEWS
+echo "GEO_VIEWS $GEO_VIEWS" >> "$log"
 
 # Stage 1
 [[ -f "$v/P1_FIT.json" ]] || stage views_fit "$py" $vv/views.py fit "$parquet" "$src" "$v/P1_FIT.json" \
@@ -149,6 +154,7 @@ for ck in M0 A1_80; do
   for f in 1 2 3 4; do
     [[ -f "$dir/rows/ROWS_B8-f$f.jsonl" ]] || continue
     for w in "${views2[@]}"; do keys+=("B8-f$f@$w"); done
+    keys+=("B8-f$f@geo")
   done
   echo "$ck keys ${keys[*]}" >> "$log"
   args=("$root" "$out/COMMAND_B200.txt" "${model[$ck]}" "$ro" "$dir/rows" "$g3" "$v" "$dir")

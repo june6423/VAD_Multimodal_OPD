@@ -20,14 +20,14 @@ PARTS = [1, 2, 3, 4]
 DIM = 50
 
 
-def make(tmp_path: Path, seed: int = 0):
+def make(tmp_path: Path, seed: int = 0, geo: bool = False):
     rng = np.random.default_rng(seed)
     d = rng.uniform(0.5, 2.0, DIM)
     vec = {}
-    for v in VIEWS:
+    for v in VIEWS + (["geo"] if geo else []):
         mu = rng.normal(size=DIM)
         for f in FOLDS:
-            vec[stats2.gname(f, v)] = mu + rng.normal(size=DIM)
+            vec[stats2.vname(f, v)] = mu + rng.normal(size=DIM)
     for kind in ("skill", "fmt"):
         base = rng.normal(size=DIM)
         for h in PARTS:
@@ -47,7 +47,7 @@ def cross_ip(vec, P1, vs, ws, folds=FOLDS):
     for a in folds:
         for b in folds:
             if a != b:
-                vals.append(np.mean([vec[stats2.gname(a, v)] @ (P1 * vec[stats2.gname(b, w)]) for v in vs for w in ws]))
+                vals.append(np.mean([vec[stats2.vname(a, v)] @ (P1 * vec[stats2.vname(b, w)]) for v in vs for w in ws]))
     return float(np.mean(vals))
 
 
@@ -79,6 +79,35 @@ def test_values_match_vectors(tmp_path):
         cs = float(gs @ (p1 * gf)) / math.sqrt(float(gs @ (p1 * gs)) * float(gf @ (p1 * gf)))
         assert q["cos_skill_fmt"]["value"] == pytest.approx(cs, rel=1e-10)
         assert q["g_skill_norm"]["value"] == pytest.approx(math.sqrt(float(gs @ (p1 * gs))), rel=1e-10)
+
+
+def test_geometric_pool(tmp_path):
+    vec, d = make(tmp_path, seed=3, geo=True)
+    res = stats2.compute(tmp_path, ["M0"])
+    assert res["checkpoints"]["M0"]["views"] == sorted(VIEWS)
+    for metric, p1, p2 in (("raw", np.ones(DIM), np.ones(DIM)), ("D", d, d ** 2)):
+        q = res["checkpoints"]["M0"]["metrics"][metric]
+        gs = np.mean([vec[stats2.hname("skill", h)] for h in PARTS], axis=0)
+        sq_geo = cross_ip(vec, p1, ["geo"], ["geo"])
+        assert q["sqnorm_Eg_geo"]["value"] == pytest.approx(sq_geo, rel=1e-10)
+        for name, ws in (("cos_Eg_geo_EgV", VIEWS), ("cos_Eg_geo_Egv0", ["p1-z2.0"])):
+            c = cross_ip(vec, p1, ["geo"], ws) / math.sqrt(sq_geo * cross_ip(vec, p1, ws, ws))
+            assert q[name]["value"] == pytest.approx(c, rel=1e-10)
+        eg = np.mean([vec[stats2.vname(a, "geo")] for a in FOLDS], axis=0)
+        u_geo = -float(eg @ (p1 * gs)) / math.sqrt(cross_ip(vec, p2, ["geo"], ["geo"]))
+        assert q["U_skill[geo]"]["value"] == pytest.approx(u_geo, rel=1e-10)
+        assert "U_fmt[geo]" in q and isinstance(q["dU_geo"]["se_fold"], float)
+        assert q["dU_geo"]["value"] == pytest.approx(u_geo - q["U_skill[p1-z2.0]"]["value"], rel=1e-10)
+        assert q["dU_geo_V"]["value"] == pytest.approx(u_geo - q["U_skill_V"]["value"], rel=1e-10)
+        # geo is not a view: E g_V and cos_u_Delta do not change
+        egv = np.mean([vec[stats2.gname(a, v)] for a in FOLDS for v in VIEWS], axis=0)
+        u_v = -float(egv @ (p1 * gs)) / math.sqrt(cross_ip(vec, p2, VIEWS, VIEWS))
+        assert q["U_skill_V"]["value"] == pytest.approx(u_v, rel=1e-10)
+        assert not any(k.startswith("cos_u_Delta[geo]") for k in q)
+    (tmp_path / "nogeo").mkdir()
+    make(tmp_path / "nogeo", seed=3)
+    q = stats2.compute(tmp_path / "nogeo", ["M0"])["checkpoints"]["M0"]["metrics"]["D"]
+    assert "dU_geo" not in q and "U_skill[geo]" not in q
 
 
 def test_jackknife(tmp_path):

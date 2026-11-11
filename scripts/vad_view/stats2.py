@@ -1,8 +1,8 @@
-"""STATS_VIEW2.json of HANDOFF-VLM-VAD-VIEW-001-R1 Part A item 8, from the Gram files only.
+"""STATS_VIEW2.json of HANDOFF-VLM-VAD-VIEW-001-R3 Part A item 8, from the Gram files only.
 
 Input, for each checkpoint ck: <root>/<ck>/GRAM_<ck>.json (gram.py: names, raw = <x, y>, M1 = <x, D y>, M2 = <x, D^2 y>).
 Vector names: G__f<f>__<view> = g(B8(f), v) (Definition 9.1), H__skill__h<h> and H__fmt__h<h> = g_skill(h) and g_fmt(h)
-(Definition 9.2), D__A1_0_80 and D__A1_80_130 (Definition 9.3).
+(Definition 9.2), D__A1_0_80 and D__A1_80_130 (Definition 9.3), GEO__f<f> = g_geo(B8(f)) (Definition 9.5).
 Metrics: "raw" (P = I: inner product raw, step norm raw) and "D" (P = D: inner product M1, step norm M2), as in
 scripts/vad_grad3/stats.py. ||Delta||^2 is raw in both metrics.
 Estimates (Definition 10, cross-fold): <E x_v, E y_w> = mean over folds a != b of <x(a, v), y(b, w)>; E g_V = mean over v
@@ -20,6 +20,9 @@ Quantities (item 8), for each checkpoint and metric:
   7. Each cos and U carries its numerator and its squared-norm estimates (keys <name>_num, <name>_norm2_*) and
      norm_nonpositive. An undefined value (a norm estimate <= 0, a division by 0) is null; undefined_count counts the
      null values of the file.
+  8. Only when the Gram file has GEO__ names (E g_geo = cross-fold mean of GEO__f<f>): sqnorm_Eg_geo, cos_Eg_geo_EgV,
+     cos_Eg_geo_Egv0, U_skill[geo], U_fmt[geo], dU_geo = U_skill[geo] - U_skill[v0], dU_geo_V = U_skill[geo] -
+     U_skill_V, with the SEs of item 6. geo is not a view: it is not in E g_V, view_ICC or cos_u_Delta.
 
 Usage: python stats2.py <root> <STATS_VIEW2.json> <checkpoint>...
 """
@@ -32,11 +35,17 @@ import sys
 from pathlib import Path
 
 V0 = "p1-z2.0"
+GEO = "geo"
 NAN = float("nan")
 
 
 def gname(f: int, v: str) -> str:
     return f"G__f{f}__{v}"
+
+
+def vname(f: int, v: str) -> str:
+    """Gram name of fold f of view v, or of the geometric pool for v == GEO."""
+    return f"GEO__f{f}" if v == GEO else gname(f, v)
 
 
 def hname(kind: str, h: int) -> str:
@@ -95,14 +104,17 @@ def quantities(m: Metric, folds: list[int], views: list[str], parts: list[int], 
     pairs = [(a, b) for a in folds for b in folds if a != b]
 
     def cross(fn, vs: list[str], ws: list[str]) -> float:
-        return mean(mean(fn(gname(a, v), gname(b, w)) for v in vs for w in ws) for a, b in pairs)
+        return mean(mean(fn(vname(a, v), vname(b, w)) for v in vs for w in ws) for a, b in pairs)
 
     def with_h(kind: str, vs: list[str]) -> float:
         """<E g_vs, g_kind> = mean over a, v in vs and h of <g(a, v), g_kind(h)>."""
-        return mean(m.ip(gname(a, v), hname(kind, h)) for a in folds for v in vs for h in parts)
+        return mean(m.ip(vname(a, v), hname(kind, h)) for a in folds for v in vs for h in parts)
 
+    has_geo = any(n.startswith("GEO__") for n in m.i)
     sets = {v: [v] for v in views}
     sets["V"] = list(views)
+    if has_geo:
+        sets[GEO] = [GEO]
     sq = {k: cross(m.ip, vs, vs) for k, vs in sets.items()}
     sqp = {k: cross(m.pp, vs, vs) for k, vs in sets.items()}
     for v in views:
@@ -117,9 +129,17 @@ def quantities(m: Metric, folds: list[int], views: list[str], parts: list[int], 
             ratio(q, name, -hh[k], {"step": sqp[k]}, sqrt(sqp[k]))
         q[f"dU_{kind}"] = q[f"U_{kind}_V"] - q[f"U_{kind}[{V0}]"]
         q[f"bias_{kind}"] = -(hh[V0] - hh["V"])
+    if has_geo:
+        q["sqnorm_Eg_geo"] = sq[GEO]
+        for name, ws in (("cos_Eg_geo_EgV", "V"), ("cos_Eg_geo_Egv0", V0)):
+            ratio(q, name, cross(m.ip, [GEO], sets[ws]), {"x": sq[GEO], "y": sq[ws]}, sqrt(sq[GEO]) * sqrt(sq[ws]))
+        q["dU_geo"] = q[f"U_skill[{GEO}]"] - q[f"U_skill[{V0}]"]
+        q["dU_geo_V"] = q[f"U_skill[{GEO}]"] - q["U_skill_V"]
     for d in deltas:
         dd = m.dd(d)
         for k, vs in sets.items():
+            if k == GEO:
+                continue
             num = -mean(m.ip(gname(a, v), d) for a in folds for v in vs)
             ratio(q, f"cos_u_Delta[{k}][{d}]", num, {"u": sqp[k], "delta": dd}, sqrt(sqp[k]) * sqrt(dd))
 

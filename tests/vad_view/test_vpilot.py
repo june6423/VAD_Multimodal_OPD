@@ -53,6 +53,15 @@ def test_stage_seconds_and_scaled(tmp_path):
     assert vpilot.scaled(10, 15, 5)["fixed"] == 0.0
 
 
+def test_geo_rate_full():
+    rates = {"p1-z2.0": 1.0, "p0.30-z3.0": 1.2, "geo": 1.5}
+    # one added view costs 1.5 - 1.0 = 0.5; 8 views = 1.5 + 6 x 0.5
+    assert vpilot.geo_rate_full(rates, 2) == pytest.approx(4.5)
+    assert vpilot.geo_rate_full(rates, 8) == pytest.approx(1.5)
+    assert vpilot.geo_rate_full({"a": 2.0, "geo": 1.0}, 2) == pytest.approx(1.0)
+    assert vpilot.FULL_POINTS == 32 and vpilot.FULL_DIRECTIONS == 10
+
+
 def test_stage1_resume_helpers(tmp_path, monkeypatch):
     path = tmp_path / "FRESH.jsonl"
     assert stage1.done_keys(path, "row") == set()

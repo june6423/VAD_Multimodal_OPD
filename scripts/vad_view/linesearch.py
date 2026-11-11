@@ -1,6 +1,7 @@
-"""Line search of HANDOFF-VLM-VAD-VIEW-001-R2 Part A item 7 with DIRECTIVE-VLM-VAD-VIEW-001-001 (fp32).
+"""Line search of HANDOFF-VLM-VAD-VIEW-001-R3 Part A item 7 with DIRECTIVE-VLM-VAD-VIEW-001-001 (fp32).
 
-Directions at one checkpoint: u = -D Gbar for each fold mean MEAN__<view> and for MEAN__V (vgram.py), D the GRAD-003
+Directions at one checkpoint: u = -D Gbar for each fold mean MEAN__<view>, for MEAN__V and for MEAN__geo (vgram.py;
+10 directions with 8 views), D the GRAD-003
 metric (grads.metric_d), scaled to the raw norm 1. Step norm s = ||Delta_A1(0,80)|| / 80 (raw diagonal of
 D__A1_0_80 in GRAM_<ck>.json). Point (u, alpha): theta = theta0 + alpha s u on the 248 tensors of G3_PARAMS.txt,
 alpha in ALPHAS (1, 4, 16).
@@ -65,6 +66,8 @@ def gram_norm2(gram: dict, members: list[str]) -> float:
 def direction_members(gram: dict, direction: str) -> list[str]:
     fm = gram["fold_means"]
     view = direction[len("MEAN__"):]
+    if view == "geo":
+        return gram["geo_fold_mean"]
     return [n for v in sorted(fm) for n in fm[v]] if view == "V" else fm[view]
 
 

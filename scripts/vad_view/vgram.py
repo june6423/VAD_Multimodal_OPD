@@ -1,11 +1,13 @@
-"""Gram files and fold means of HANDOFF-VLM-VAD-VIEW-001-R2 Part A item 6.
+"""Gram files and fold means of HANDOFF-VLM-VAD-VIEW-001-R3 Part A item 6.
 
 gram: GRAM_<ck>.json holds the fp64 inner products raw <x, y>, M1 <x, D y> and M2 <x, D^2 y> of all vectors of
-  Definition 9 at the checkpoint: G__f<f>__<view> (vectors/O__B8-f<f>@<view>__total.pt), H__skill__h<h> and
+  Definition 9 at the checkpoint: G__f<f>__<view> (vectors/O__B8-f<f>@<view>__total.pt), GEO__f<f>
+  (vectors/O__B8-f<f>@geo__total.pt, Definition 9.5), H__skill__h<h> and
   H__fmt__h<h> (vectors/H__*.pt), and the displacements D__A1_0_80 and D__A1_80_130. D is the GRAD-003 metric
   (scripts/vad_grad3/grads.py metric_d, Definition 8.1 of HANDOFF-VLM-VAD-GRAD-003-R3). The same block pass writes
-  the fold means MEAN__<view> = mean over f of G__f<f>__<view> and MEAN__V = their mean over the views (fp32 .npy) for
-  the line search. Then GRAM_<ck>.sha256.
+  the fold means MEAN__<view> = mean over f of G__f<f>__<view>, MEAN__V = their mean over the views (the views only)
+  and MEAN__geo = mean over f of GEO__f<f> (fp32 .npy) for the line search. "fold_means" lists the view members,
+  "geo_fold_mean" the GEO members. Then GRAM_<ck>.sha256.
 remove: after the line search, remove the vector files and the fold means of the checkpoint; VECTORS_REMOVED.json.
 
 Usage: python vgram.py gram <ck dir> <displacement dir> <V file> <G3_PARAMS.txt> <checkpoint>
@@ -35,6 +37,8 @@ def vector_name(path: Path) -> str | None:
     if stem.startswith("O__B8-f") and stem.endswith("__total") and "@" in stem:
         key = stem[len("O__"):-len("__total")]
         batch, view = key.split("@")
+        if view == "geo":
+            return f"GEO__f{batch[len('B8-f'):]}"
         return f"G__f{batch[len('B8-f'):]}__{view}"
     if stem.startswith("H__"):
         return stem
@@ -78,9 +82,9 @@ def gram(argv: list[str]):
     if d.numel() != n:
         raise SystemExit(f"STOP: D has {d.numel()} elements, the vectors {n}")
     groups = fold_mean_groups(names)
+    geo = [i for i, nm in enumerate(names) if nm.startswith("GEO__")]
     means = {v: np.lib.format.open_memmap(ck_dir / f"MEAN__{v}.npy.tmp", mode="w+", dtype=np.float32, shape=(n,))
-             for v in groups}
-    means["V"] = np.lib.format.open_memmap(ck_dir / "MEAN__V.npy.tmp", mode="w+", dtype=np.float32, shape=(n,))
+             for v in list(groups) + ["V"] + (["geo"] if geo else [])}
     block = int(os.environ.get("BLOCK", str(1 << 23)))
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     k = len(files)
@@ -108,6 +112,8 @@ def gram(argv: list[str]):
             for v, val in fm.items():
                 means[v][s:s + m_s] = val.float().cpu().numpy()
             means["V"][s:s + m_s] = torch.stack(list(fm.values())).mean(0).float().cpu().numpy()
+            if geo:
+                means["geo"][s:s + m_s] = x[geo].mean(0).float().cpu().numpy()
             del x, xd, db, fm
     for fd in fds:
         os.close(fd)
@@ -117,7 +123,8 @@ def gram(argv: list[str]):
         os.replace(ck_dir / f"MEAN__{v}.npy.tmp", ck_dir / f"MEAN__{v}.npy")
     res = {"checkpoint": checkpoint, "names": names, "files": [str(f) for f in files], "elements": n, "block": block,
            "metric": d_info, **{m: g[m].cpu().tolist() for m in g},
-           "fold_means": {v: [names[i] for i in idx] for v, idx in groups.items()}, "seconds": round(time.time() - t0, 1)}
+           "fold_means": {v: [names[i] for i in idx] for v, idx in groups.items()},
+           "geo_fold_mean": [names[i] for i in geo], "seconds": round(time.time() - t0, 1)}
     path = ck_dir / f"GRAM_{checkpoint}.json"
     path.write_text(json.dumps(res))
     (ck_dir / f"GRAM_{checkpoint}.sha256").write_text(f"{g3.sha256_file(path)}  {path.name}\n")

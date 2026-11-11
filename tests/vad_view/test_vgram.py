@@ -25,6 +25,7 @@ FOLDS = [1, 3]
 
 def test_vector_names():
     assert vgram.vector_name(Path("O__B8-f2@p0.30-z3.0__total.pt")) == "G__f2__p0.30-z3.0"
+    assert vgram.vector_name(Path("O__B8-f3@geo__total.pt")) == "GEO__f3"
     assert vgram.vector_name(Path("H__skill__h3.pt")) == "H__skill__h3"
     assert vgram.vector_name(Path("partial_O__B8-f2@p1-z2.0__total.pt")) is None
     assert vgram.vector_name(Path("O__B8-f1@g2__total.tmp")) is not None  # only *.pt files are listed by inputs()
@@ -48,6 +49,8 @@ def test_gram_fold_means_remove(tmp_path, monkeypatch, block):
         for v in VIEWS:
             vec[f"G__f{f}__{v}"] = torch.randn(n, generator=g)
             torch.save(vec[f"G__f{f}__{v}"], ck / "vectors" / f"O__B8-f{f}@{v}__total.pt")
+        vec[f"GEO__f{f}"] = torch.randn(n, generator=g)
+        torch.save(vec[f"GEO__f{f}"], ck / "vectors" / f"O__B8-f{f}@geo__total.pt")
     for k in ("skill", "fmt"):
         for h in (1, 2):
             vec[f"H__{k}__h{h}"] = torch.randn(n, generator=g)
@@ -73,9 +76,14 @@ def test_gram_fold_means_remove(tmp_path, monkeypatch, block):
         assert res["fold_means"][v] == [f"G__f{f}__{v}" for f in FOLDS]
     want_v = torch.stack([vec[f"G__f{f}__{v}"] for f in FOLDS for v in VIEWS]).double().mean(0).numpy()
     assert np.allclose(np.load(ck / "MEAN__V.npy"), want_v, rtol=1e-6, atol=1e-7)
+    assert sorted(res["fold_means"]) == sorted(VIEWS)
+    assert res["geo_fold_mean"] == [f"GEO__f{f}" for f in FOLDS]
+    want_geo = torch.stack([vec[f"GEO__f{f}"] for f in FOLDS]).double().mean(0).numpy()
+    assert np.allclose(np.load(ck / "MEAN__geo.npy"), want_geo, rtol=1e-6, atol=1e-7)
     assert not list(ck.glob("*.tmp"))
     vgram.remove([str(ck)])
     assert not list((ck / "vectors").glob("*")) and not list(ck.glob("MEAN__*"))
     rec = json.loads((ck / "VECTORS_REMOVED.json").read_text())
     assert rec["left"] == [] and "MEAN__V.npy" in rec["removed"] and "H__fmt__h2.pt" in rec["removed"]
+    assert "MEAN__geo.npy" in rec["removed"]
     assert all((disp / f"{k}.pt").exists() for k in vgram.DISPLACEMENTS)

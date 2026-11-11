@@ -20,7 +20,7 @@ def test_points():
     assert [p for p, _, _ in pts] == ["a0-r1", "a0-r2", "MEAN__V@a1", "MEAN__V@a4", "MEAN__V@a16",
                                       "MEAN__p1-z2.0@a1", "MEAN__p1-z2.0@a4", "MEAN__p1-z2.0@a16"]
     assert pts[0][1] is None and pts[3] == ("MEAN__V@a4", "MEAN__V", 4.0)
-    assert len(ls.point_names([f"MEAN__{i}" for i in range(9)], [1, 4, 16])) == 29
+    assert len(ls.point_names([f"MEAN__{i}" for i in range(10)], [1, 4, 16])) == 32
 
 
 def test_items_of():
@@ -32,12 +32,14 @@ def test_items_of():
 def test_direction_norm_from_gram():
     rng = np.random.default_rng(0)
     d = rng.uniform(0.5, 2, 20)
-    names = ["G__f1__a", "G__f2__a", "G__f1__b", "G__f2__b", "D__A1_0_80"]
+    names = ["G__f1__a", "G__f2__a", "G__f1__b", "G__f2__b", "GEO__f1", "GEO__f2", "D__A1_0_80"]
     x = {n: rng.normal(size=20) for n in names}
     m = np.stack([x[n] for n in names])
     gram = {"names": names, "M2": ((m * d) @ (m * d).T).tolist(),
-            "fold_means": {"a": ["G__f1__a", "G__f2__a"], "b": ["G__f1__b", "G__f2__b"]}}
-    for direction, members in (("MEAN__a", ["G__f1__a", "G__f2__a"]), ("MEAN__V", names[:4])):
+            "fold_means": {"a": ["G__f1__a", "G__f2__a"], "b": ["G__f1__b", "G__f2__b"]},
+            "geo_fold_mean": ["GEO__f1", "GEO__f2"]}
+    for direction, members in (("MEAN__a", ["G__f1__a", "G__f2__a"]), ("MEAN__V", names[:4]),
+                               ("MEAN__geo", ["GEO__f1", "GEO__f2"])):
         assert sorted(ls.direction_members(gram, direction)) == sorted(members)
         mean = np.mean([x[n] for n in members], axis=0)
         assert math.sqrt(ls.gram_norm2(gram, members)) == pytest.approx(np.linalg.norm(d * mean), rel=1e-12)
