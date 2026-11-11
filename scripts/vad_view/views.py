@@ -31,6 +31,7 @@ import math
 import os
 import random
 import sys
+import time
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -131,8 +132,14 @@ _proc = None
 
 
 def _init(model_dir: str):
+    """Pool worker: one torch CPU thread (TASK-VLM-VAD-VIEW-001-001 timed out at about 3.5 min per row with 32 workers
+    of 72 threads each on 72 CPUs)."""
     global _proc
+    os.environ["OMP_NUM_THREADS"] = "1"
+    import torch
     from transformers import AutoProcessor
+
+    torch.set_num_threads(1)
 
     _proc = AutoProcessor.from_pretrained(model_dir, use_fast=True)
 
@@ -140,6 +147,7 @@ def _init(model_dir: str):
 def build_row(job: dict) -> dict:
     from PIL import Image
 
+    t0 = time.time()
     out = Path(job["out"])
     rec = {"row": job["row"], "bbox": job["bbox"], "student": job["student"], "views": {}}
     with Image.open(job["student"]) as im:
@@ -169,6 +177,7 @@ def build_row(job: dict) -> dict:
         rec["views"][name] = {"path": path, "crop": crop, "size": list(v.size), "image_tokens": n, "grid": grid,
                               "teacher_tokens": rec["text_tokens"] - 1 + n}
     rec["max_teacher_tokens"] = max(x["teacher_tokens"] for x in rec["views"].values())
+    rec["seconds"] = round(time.time() - t0, 3)
     return rec
 
 
@@ -220,11 +229,15 @@ def build(argv: list[str]):
     if man.exists():
         done = {json.loads(x)["row"] for x in open(man)}
     jobs = [{**r, "out": str(out), "p1": p1} for r in rows if r["row"] not in done]
+    t0 = time.time()
     with Pool(int(os.environ.get("WORKERS", "32")), initializer=_init, initargs=(model_dir,)) as pool, \
             open(man, "a") as f:
-        for rec in pool.imap_unordered(build_row, jobs, chunksize=4):
+        for n, rec in enumerate(pool.imap_unordered(build_row, jobs, chunksize=4), 1):
             f.write(json.dumps(rec) + "\n")
             f.flush()
+            if n % 200 == 0 or n == len(jobs):
+                el = time.time() - t0
+                print(f"build {n}/{len(jobs)} rows, {el:.0f} s, {n / el:.2f} rows/s", flush=True)
     recs = sorted((json.loads(x) for x in open(man)), key=lambda r: r["row"])
     removed = [{"row": r["row"], "max_teacher_tokens": r["max_teacher_tokens"]} for r in recs
                if r["max_teacher_tokens"] > MAX_REPROMPT_LEN]
