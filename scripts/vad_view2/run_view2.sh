@@ -13,7 +13,7 @@
 # After the judge session: scripts/merge_checkpoint.sh of each checkpoint step into <out>/merged/step_<k>, then
 # heldout.py (Definition 6) on it into <out>/heldout/<k>/. Then metrics.py and val_acc.py (scripts/vad_packfix).
 # PILOT=1 (Part A item 7): TRAIN_BATCH_SIZE and PPO_MINI_BATCH_SIZE 16, the train file PILOT_TRAIN_FILE (16 rows of
-#   pilot_rows.py), step 1 with a save in run1, stop, resume for step 2 in run2 (save at step 2); validation of step 2
+#   pilot_rows.py, written 2 times: 2 steps in one epoch), step 1 with a save in run1, stop, resume for step 2 in run2 (save at step 2); validation of step 2
 #   on 20 rows (val_subset.py); held-out on HELDOUT_N=10 items.
 # CHECK=1 (check_view2.sh, gates G2 and G3): step 1 only, training only (no judge session, no validation). Here
 #   CODE_ROOT may name another code tree (the PACKFIX archive), WORKER_HOOK replaces the Ray hook, G3_PY is put on

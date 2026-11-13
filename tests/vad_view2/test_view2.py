@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "vad_view2"))
 import g2check  # noqa: E402
 import hook  # noqa: E402
+import pilot_rows  # noqa: E402
 import stats  # noqa: E402
 import viewmap  # noqa: E402
 import views  # noqa: E402
@@ -176,6 +177,20 @@ def test_g2check_detects_wrong_image(tmp_path, monkeypatch):
     assert res["checked_prompts"] == 20
     assert {f[1] for f in res["fails"]} == {"path", "sha256"}
     assert res["fail_count"] == 40
+
+
+def test_pilot_epoch_has_two_steps():
+    """TASK-VLM-VAD-VIEW-002-002: with 16 rows the resume after step 1 is at the epoch end and run2 has no step."""
+    import pandas as pd
+
+    man = [{"row": i, "max_teacher_tokens": 100 + (i == 7) * 900,
+            "views": {"p0.30-z3.0": {"size": [10, 10 + (i == 30) * 90]}}} for i in range(60)]
+    sel = pilot_rows.choose(man)
+    assert len(sel["rows"]) == 16 and {7, 30} <= set(sel["rows"])
+    df = pd.DataFrame({"row": range(60)})
+    p = pilot_rows.pilot_frame(df, sel["rows"])
+    assert len(p) // 16 == 2 and len(p) % 16 == 0
+    assert list(p["row"]) == sel["rows"] * 2
 
 
 def test_build_map():
