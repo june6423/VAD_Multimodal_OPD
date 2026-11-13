@@ -214,6 +214,15 @@ def should_reuse_rollout_log_probs_as_old_log_probs(config, batch: DataProto) ->
     return effective_batch_size == expected_on_policy_batch_size
 
 
+def _vad_view2_hook():
+    """VLM-VAD-VIEW-002: the teacher-image hook (scripts/vad_view2/hook.py) when VAD_VIEW_ARM is set, else None."""
+    if not os.environ.get("VAD_VIEW_ARM"):
+        return None
+    from scripts.vad_view2 import hook
+
+    return hook
+
+
 def compute_advantage(
     data: DataProto,
     adv_estimator: AdvantageEstimator,
@@ -538,6 +547,9 @@ class RayPPOTrainer:
             if os.environ.get("VAD_TOKSTATS_DIR") and "row_index" in batch.batch.keys():
                 reward_extra_infos_to_dump["uid"] = [str(uid) for uid in batch.non_tensor_batch["uid"]]
                 reward_extra_infos_to_dump["row_index"] = batch.batch["row_index"].tolist()
+            vad_view2 = _vad_view2_hook()
+            if vad_view2 is not None:  # VLM-VAD-VIEW-002: the view slot of each row
+                reward_extra_infos_to_dump["vad_view"] = vad_view2.dump_views(batch)
             if "request_id" in batch.non_tensor_batch:
                 reward_extra_infos_dict.setdefault(
                     "request_id",
@@ -2714,9 +2726,11 @@ class RayPPOTrainer:
 
                 # pass global_steps to trace
                 gen_batch.meta_info["global_steps"] = self.global_steps
-                gen_batch_output = gen_batch.repeat(
-                    repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
-                )
+                gen_n = self.config.actor_rollout_ref.rollout.n
+                vad_view2 = _vad_view2_hook()  # VLM-VAD-VIEW-002
+                if vad_view2 is not None:
+                    gen_n = vad_view2.generation_n(vad_view2.arm(), gen_n)
+                gen_batch_output = gen_batch.repeat(repeat_times=gen_n, interleave=True)
 
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
@@ -2729,6 +2743,8 @@ class RayPPOTrainer:
 
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
+                        if vad_view2 is not None:  # VLM-VAD-VIEW-002: the N1V8 copy step
+                            gen_batch_output = vad_view2.copy_responses(gen_batch_output, vad_view2.arm())
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         if self.reward_fn is None:
@@ -2768,6 +2784,8 @@ class RayPPOTrainer:
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
+                    if vad_view2 is not None:  # VLM-VAD-VIEW-002: the x-plus image of each row
+                        vad_view2.assign_views(batch, self.global_steps)
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
@@ -2876,6 +2894,8 @@ class RayPPOTrainer:
                         if not reward_free_teacher_vopd and self.config.reward_model.launch_reward_fn_async:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
 
+                        if vad_view2 is not None:  # VLM-VAD-VIEW-002: gate G2 record of the x-plus images
+                            vad_view2.log_teacher_images(batch, self.global_steps)
                         self_distillation_data = self._maybe_build_self_distillation_batch(batch, reward_tensor, reward_extra_infos_dict)
                         if self_distillation_data is not None:
                             self_distillation_batch, self_distillation_metrics = self_distillation_data
