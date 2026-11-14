@@ -5,7 +5,8 @@
 # in this order into <out>/<arm>, then stats.py (STATS_VIEW002.json; R2: step 40 only) and
 # scripts/vad_view2/steppeak.py (STEPPEAK.json).
 # PILOT=1 (Part A item 7): pilot_rows.py first (16 prompts), stats.py on step 2 with 20 rows, projection.py
-# (PROJECTION.json), then the end cleanup (the checkpoints and merged models of the pilot are removed after the checks).
+# (PROJECTION.json), one full-size step of N1V8 and T8 before stats.py (DIRECTIVE-VLM-VAD-VIEW-002-002, peak
+# below 134 GiB, STEPPEAK_FULLSIZE.json), then the end cleanup (the checkpoints and merged models of the pilot are removed after the checks).
 # The FULL task keeps the checkpoints of steps 20 and 40 and the merged step 40 model on b200.
 # A restarted task skips a finished arm (TRAIN_DONE) and resumes an unfinished arm from its last checkpoint.
 # Usage: B200_ROOT=<root> ENV_ROOT=<env root> CUDA_VISIBLE_DEVICES=0 [PILOT=1] [JUDGE_GPU_UTIL] [ROLLOUT_GPU_UTIL] \
@@ -76,6 +77,23 @@ for arm in N1R N1V8 B T8; do
   [[ $code -eq 0 ]] || exit 1
 done
 if [[ "$pilot" == 1 ]]; then
+  # DIRECTIVE-VLM-VAD-VIEW-002-002 Decision 3: one full-size step (96 prompts) of N1V8 and of T8 (run_view2.sh
+  # DIAG_STEPS=1) into <out>/fullsize, STEPPEAK_FULLSIZE.json, and the rule: each peak of anon+shmem below 134 GiB.
+  fs="$out/fullsize"
+  mkdir -p "$fs"
+  echo "== date $(date -u +%Y-%m-%dT%H:%M:%SZ) full-size steps" >> "$fs/RUN_ALL.txt"
+  ln -sfn ../memwatch.log "$fs/memwatch.log"
+  for arm in N1V8 T8; do
+    start=$(date +%s)
+    PILOT=0 ARM="$arm" DIAG_STEPS=1 bash scripts/vad_view2/run_view2.sh "$fs/$arm"
+    code=$?
+    echo "full-size arm $arm exit $code wall_seconds $(( $(date +%s) - start )) at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
+    rm -rf "$fs/$arm/checkpoints"
+    [[ $code -eq 0 ]] || exit 1
+  done
+  PYTHONPATH="$root" "$py" scripts/vad_view2/steppeak.py "$fs" "$out/STEPPEAK_FULLSIZE.json" >> "$log" 2>&1 || exit 1
+  "$py" -c 'import json,sys; p=json.load(open(sys.argv[1]))["max_anon_shmem"]; print("full-size peak anon+shmem", p, "GiB"); sys.exit(0 if p is not None and p < 134 else 1)' \
+    "$out/STEPPEAK_FULLSIZE.json" >> "$log" 2>&1 || { echo "full-size peak not below 134 GiB" >> "$log"; exit 1; }
   "$py" scripts/vad_view2/stats.py "$out" "$out/STATS_VIEW002.json" 2 20 >> "$log" 2>&1 || { echo "stats failed" >> "$log"; exit 1; }
   echo "pilot wall_seconds $(( $(date +%s) - t0 ))" >> "$log"
   "$py" scripts/vad_view2/projection.py "$out" "$packfix_b" "$out/PROJECTION.json" >> "$log" 2>&1 || exit 1

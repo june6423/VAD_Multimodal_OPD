@@ -11,9 +11,14 @@
 #      rows of step 1 and saves them (replay.pkl); the second run replays them. g3compare.py -> G3_CHECK.json.
 #   4. G2: check runs of T8, N1V8 and N1R (step 1, replay of the same rollouts; N1V8 and N1R take every 8th row),
 #      g2/B = g3/view2. g2check.py -> G2_CHECK.json (also the N1R slot counts of steps 1 to 40).
+#   5. EQ (DIRECTIVE-VLM-VAD-VIEW-002-002 Decision 2): the G2 runs also dump their step-1 gradient. Check runs of
+#      T8, N1V8 and N1R with the code of EQ_COMMIT (git archive into eq_src/, the code of the N1R outputs of
+#      TASK-VLM-VAD-VIEW-002-005) on the same replay into eq/<arm>. eqcompare.py -> EQ_CHECK.json.
+#   REPLAY_FROM=<replay.pkl> (optional): a symbolic link to the saved rollouts of an earlier check task, so that the
+#   first run replays them and does not generate.
 #   The checkpoints of the check runs and the gradient files are removed at the end (the JSON summaries stay).
-# Exit 0 when G2 and G3 pass, else 1.
-# Usage: B200_ROOT=<root> ENV_ROOT=<env root> CUDA_VISIBLE_DEVICES=0 [ROLLOUT_GPU_UTIL] \
+# Exit 0 when G2, G3 and EQ pass, else 1.
+# Usage: B200_ROOT=<root> ENV_ROOT=<env root> CUDA_VISIBLE_DEVICES=0 [ROLLOUT_GPU_UTIL] [REPLAY_FROM] \
 #   scripts/vad_view2/check_view2.sh <output_root>
 set -uo pipefail
 out="$1"
@@ -24,6 +29,7 @@ data="$b200/harness/data"
 view1="$b200/harness/outputs/VLM-VAD-VIEW-001/TASK-VLM-VAD-VIEW-001-006"
 packfix_b="$b200/harness/outputs/VLM-VAD-PACKFIX-001/TASK-VLM-VAD-PACKFIX-001-026/B"
 packfix_commit=eb933d4771d52fce283741d2352bb568a9fdf453
+eq_commit=f09a2ac0e082a14808326504feb57840188fc41d
 mkdir -p "$out"
 cd "$root" || exit 1
 log="$out/CHECK_VIEW2.txt"
@@ -65,6 +71,18 @@ if [[ ! -f "$src/ARCHIVE_DONE" ]]; then
   echo "$packfix_commit" > "$src/ARCHIVE_DONE"
 fi
 echo "PACKFIX code $packfix_commit in $src: ray_trainer.py sha256 $(sha256sum "$src/verl/trainer/ppo/ray_trainer.py" | cut -d' ' -f1)" >> "$log"
+eq_src="$out/eq_src"
+if [[ ! -f "$eq_src/ARCHIVE_DONE" ]]; then
+  rm -rf "$eq_src"
+  mkdir -p "$eq_src"
+  git -c safe.directory="$root" archive "$eq_commit" | tar -x -C "$eq_src" || exit 1
+  echo "$eq_commit" > "$eq_src/ARCHIVE_DONE"
+fi
+echo "EQ code $eq_commit in $eq_src: hook.py sha256 $(sha256sum "$eq_src/scripts/vad_view2/hook.py" | cut -d' ' -f1)" >> "$log"
+if [[ -n "${REPLAY_FROM:-}" && ! -e "$out/replay.pkl" ]]; then
+  ln -s "$REPLAY_FROM" "$out/replay.pkl" || exit 1
+  echo "replay.pkl -> $REPLAY_FROM" >> "$log"
+fi
 export CHECK=1 WORKER_HOOK=vad_view2_g3.setup G3_PY="$g3py" VAD_G3_REPLAY="$out/replay.pkl" HELDOUT_JSON=-
 
 # run <arm> <dir> [code root] [gradient file]
@@ -86,16 +104,23 @@ echo "g3compare.py exit $g3" >> "$log"
 mkdir -p "$out/g2"
 ln -sfn ../g3/view2 "$out/g2/B"
 for arm in T8 N1V8 N1R; do
-  [[ -f "$out/g2/$arm/views_log/teacher_1.jsonl" ]] || run "$arm" "$out/g2/$arm" || exit 1
+  [[ -f "$out/g2/$arm/grad.bin.json" ]] || run "$arm" "$out/g2/$arm" "" "$out/g2/$arm/grad.bin" || exit 1
 done
 "$py" scripts/vad_view2/g2check.py "$out/g2" "$VAD_VIEW_MAP" "$out/G2_CHECK.json" >> "$log" 2>&1
 g2=$?
 echo "g2check.py exit $g2" >> "$log"
 
-for d in "$out/g3/view2" "$out/g3/packfix" "$out/g2/T8" "$out/g2/N1V8" "$out/g2/N1R"; do
+for arm in T8 N1V8 N1R; do
+  [[ -f "$out/eq/$arm/grad.bin.json" ]] || run "$arm" "$out/eq/$arm" "$eq_src" "$out/eq/$arm/grad.bin" || exit 1
+done
+PYTHONPATH="$root" "$py" scripts/vad_view2/eqcompare.py "$out/g2" "$out/eq" "$out/EQ_CHECK.json" T8 N1V8 N1R >> "$log" 2>&1
+eq=$?
+echo "eqcompare.py exit $eq" >> "$log"
+
+for d in "$out/g3/view2" "$out/g3/packfix" "$out/g2/T8" "$out/g2/N1V8" "$out/g2/N1R" "$out/eq/T8" "$out/eq/N1V8" "$out/eq/N1R"; do
   echo "removed: $(du -sh "$d/checkpoints" 2>/dev/null | cut -f1) checkpoints of $d" >> "$log"
   rm -rf "$d/checkpoints"
   rm -f "$d/grad.bin"
 done
-echo "== done $(date -u +%Y-%m-%dT%H:%M:%SZ) G3 exit $g3 G2 exit $g2" >> "$log"
-[[ $g3 -eq 0 && $g2 -eq 0 ]]
+echo "== done $(date -u +%Y-%m-%dT%H:%M:%SZ) G3 exit $g3 G2 exit $g2 EQ exit $eq" >> "$log"
+[[ $g3 -eq 0 && $g2 -eq 0 && $eq -eq 0 ]]

@@ -2,7 +2,8 @@
 
 check_view2.sh copies this file to <out>/g3py/vad_view2_g3.py and puts that folder on PYTHONPATH, so that the same hook
 also loads in the run of the exp/VLM-VAD-PACKFIX-001 code (a git archive without scripts/vad_view2). setup():
-1. scripts.vad_packfix.hostmem.setup() (the hook of the training runs, unchanged).
+1. scripts.vad_packfix.hostmem.setup() (the hook of the training runs, unchanged), and in a code tree with
+   scripts/vad_view2/memfix.py also memfix.patch_update_actor (the rest of memfix.worker_setup).
 2. Replay (env VAD_G3_REPLAY=<file>): AgentLoopManager.generate_sequences. When the file does not exist, the call
    generates as before and saves the output (pickle) with the row key of each request row (the released teacher
    image path, unique for each data row). When the file exists, the call returns the saved output: for a request
@@ -99,6 +100,14 @@ def setup():
     from scripts.vad_packfix import hostmem
 
     hostmem.setup()
+    try:  # the worker part of scripts/vad_view2/memfix.py; the code of f09a2ac0 and of PACKFIX has no memfix.py
+        from scripts.vad_view2 import memfix
+    except ImportError:
+        memfix = None
+    if memfix is not None:
+        from verl.workers.fsdp_workers import ActorRolloutRefWorker
+
+        memfix.patch_update_actor(ActorRolloutRefWorker)
     if os.environ.get("VAD_G3_REPLAY"):
         _patch_replay(os.environ["VAD_G3_REPLAY"])
     if os.environ.get("VAD_G3_GRAD"):

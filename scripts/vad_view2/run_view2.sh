@@ -131,7 +131,7 @@ export VAD_PACKFIX=0
 export VAD_VIEW_ARM="$arm" VAD_VIEW_MAP="$viewmap" VAD_VIEW_LOG_DIR="$out/views_log"
 export ROLLOUT_AGENT_NUM_WORKERS=8
 export RAY_DEDUP_LOGS=0
-hook="${WORKER_HOOK:-scripts.vad_packfix.hostmem.setup}"
+hook="${WORKER_HOOK:-scripts.vad_view2.memfix.worker_setup}"
 common=(
   "++ray_kwargs.ray_init.runtime_env.env_vars.VAD_PACKFIX='0'"
   "++ray_kwargs.ray_init.runtime_env.env_vars.VAD_VIEW_ARM='$arm'"
@@ -174,6 +174,7 @@ for c in "${common[@]}"; do
   case "$c" in
     ++trainer.validation_data_dir=*) ;;
     *=scripts.vad_packfix.hostmem.setup) val_common+=("${c%hostmem.setup}valtrim.setup") ;;
+    *=scripts.vad_view2.memfix.worker_setup) val_common+=("${c%scripts.vad_view2.memfix.worker_setup}scripts.vad_packfix.valtrim.setup") ;;
     *) val_common+=("$c") ;;
   esac
 done
