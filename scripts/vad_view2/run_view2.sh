@@ -19,6 +19,8 @@
 # CHECK=1 (check_view2.sh, gates G2 and G3): step 1 only, training only (no judge session, no validation). Here
 #   CODE_ROOT may name another code tree (the PACKFIX archive), WORKER_HOOK replaces the Ray hook, G3_PY is put on
 #   PYTHONPATH, and VAD_G3_REPLAY and VAD_G3_GRAD go to the workers.
+# DIAG_STEPS=<n> (DIRECTIVE-VLM-VAD-VIEW-002-002, host-memory diagnosis): steps 1 to n from M0 with the full batch,
+#   training only (no judge session, no validation), one save at step n.
 # A restarted task resumes through trainer.resume_mode=auto, skips a finished training, a validated step, a merged
 # checkpoint and a finished held-out step. A finished arm (TRAIN_DONE) is not run again.
 # Usage: ARM=<B|T8|N1V8|N1R> VAD_VIEW_MAP=<VIEWMAP.json> HELDOUT_JSON=<HELDOUT.json> [PILOT=1] [CHECK=1]
@@ -28,7 +30,7 @@ set -uo pipefail
 out="$1"
 own_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 arm="${ARM:?ARM must be B, T8, N1V8 or N1R}"
-pilot="${PILOT:-0}" check="${CHECK:-0}"
+pilot="${PILOT:-0}" check="${CHECK:-0}" diag="${DIAG_STEPS:-0}"
 root="$own_root"
 if [[ -n "${CODE_ROOT:-}" ]]; then
   [[ "$check" == 1 ]] || { echo "CODE_ROOT needs CHECK=1" >&2; exit 2; }
@@ -46,7 +48,7 @@ cd "$root" || exit 1
 log="$out/RUN_VIEW2.txt"
 export PYTHONDONTWRITEBYTECODE=1
 {
-  echo "== date $(date -u +%Y-%m-%dT%H:%M:%SZ) code $root git HEAD $(git -c safe.directory="$root" rev-parse HEAD 2>/dev/null || echo none) script HEAD $(git -c safe.directory="$own_root" -C "$own_root" rev-parse HEAD) ARM $arm PILOT $pilot CHECK $check VAD_PACKFIX 0"
+  echo "== date $(date -u +%Y-%m-%dT%H:%M:%SZ) code $root git HEAD $(git -c safe.directory="$root" rev-parse HEAD 2>/dev/null || echo none) script HEAD $(git -c safe.directory="$own_root" -C "$own_root" rev-parse HEAD) ARM $arm PILOT $pilot CHECK $check DIAG_STEPS $diag VAD_PACKFIX 0"
   echo "judge_gpu_util $judge_util rollout_gpu_util $rollout_util view map $viewmap sha256 $(sha256sum "$viewmap" | cut -d' ' -f1)"
   echo "validation: val_batch_size $val_bs wall limit $val_limit s for each val_only process"
   nvidia-smi --query-gpu=index,uuid,memory.used,memory.total --format=csv
@@ -57,6 +59,7 @@ export PYTHONDONTWRITEBYTECODE=1
 # held-out set B (HANDOFF-VLM-VAD-VIEW-002-R2: step 40 only; the step 20 checkpoint stays for a later evaluation).
 if [[ "$pilot" == 1 ]]; then steps=2; ckpt_steps=(2); eval_steps=(2)
 elif [[ "$check" == 1 ]]; then steps=1; ckpt_steps=(); eval_steps=()
+elif [[ "$diag" -gt 0 ]]; then steps=$diag; ckpt_steps=(); eval_steps=()
 else steps=40; ckpt_steps=(20 40); eval_steps=(40); fi
 if [[ -f "$out/TRAIN_DONE" ]]; then
   echo "arm $arm already finished" >> "$log"
@@ -97,7 +100,7 @@ else
   val_file="$data/vad/benchmarks/opd_fast_benchmarks.parquet"
 fi
 split_dir="$out/val_split"
-if [[ "$check" != 1 ]]; then
+if [[ "$check" != 1 && "$diag" == 0 ]]; then
   [[ -f "$split_dir/VAL_SPLIT.json" ]] || "$py" scripts/vad_packfix/val_split.py \
     "$data/vad/benchmarks/opd_fast_benchmarks.parquet" "$split_dir" 4 >> "$log" 2>&1 || exit 1
   "$py" scripts/vad_packfix/val_batches.py "$split_dir" "$val_bs" "$split_dir/VAL_BATCHES.json" >> "$log" 2>&1 || exit 1
@@ -231,6 +234,8 @@ if [[ "$latest" -lt "$steps" ]]; then
       | sed 's/^/resume evidence: /' >> "$log"
   elif [[ "$check" == 1 ]]; then
     train 1 1 check || exit 1
+  elif [[ "$diag" -gt 0 ]]; then
+    train "$diag" "$diag" diag || exit 1
   else
     train 40 20 full || exit 1
   fi
@@ -242,7 +247,7 @@ for k in "${ckpt_steps[@]}"; do
   [[ -d "$out/checkpoints/global_step_$k" ]] || { echo "no checkpoint of step $k" >> "$log"; exit 1; }
 done
 echo "view lines: assign $(ls "$out"/views_log/assign_*.jsonl 2>/dev/null | wc -l) teacher $(ls "$out"/views_log/teacher_*.jsonl 2>/dev/null | wc -l) files" >> "$log"
-if [[ "$check" == 1 ]]; then
+if [[ "$check" == 1 || "$diag" -gt 0 ]]; then
   echo "== check run done $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
   exit 0
 fi

@@ -159,3 +159,17 @@ def log_teacher_images(batch, step: int) -> None:
         p = row_key(item)
         lines.append({"position": j, "uid": str(u), "slot": s, "path": p, "sha256": file_sha256(p)})
     _log("teacher", step, lines)
+
+
+def _install_memfix() -> None:
+    """DIRECTIVE-VLM-VAD-VIEW-002-002: memfix.install(RayPPOTrainer) when the trainer module is loaded (the driver)."""
+    import sys
+
+    rt = sys.modules.get("verl.trainer.ppo.ray_trainer")
+    if rt is not None:
+        from scripts.vad_view2 import memfix
+
+        memfix.install(rt.RayPPOTrainer)
+
+
+_install_memfix()
