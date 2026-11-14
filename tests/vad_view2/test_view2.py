@@ -193,6 +193,22 @@ def test_pilot_epoch_has_two_steps():
     assert list(p["row"]) == sel["rows"] * 2
 
 
+def test_projection_counts_one_evaluation():
+    """HANDOFF-VLM-VAD-VIEW-002-R2: validation and held-out only at step 40."""
+    import projection
+
+    ref = {"timing_s/gen": 300.0, "timing_s/update_actor": 900.0, "rest": 100.0, "validation_s": 6000.0,
+           "scoring_s": 4.0}
+    p = {"timing_s/gen": 30.0, "timing_s/update_actor": 90.0, "rest": 10.0, "startup_s": 300.0,
+         "judge_start_s": 80.0, "merge_s": 90.0, "heldout_load_s": 100.0, "heldout_item_s": 4.0}
+    res = projection.project(ref, {a: dict(p) for a in projection.ARMS})
+    parts = res["B"]["parts"]
+    assert res["B"]["step_s"] == pytest.approx(1300.0)
+    assert parts["validation_s"] == 6000.0
+    assert parts["merge_heldout_s"] == pytest.approx(90 + 100 + 500 * 4)
+    assert res["N1R"]["parts"]["scoring_s"] == pytest.approx(40 * 4 * 96 / 768)
+
+
 def test_build_map():
     names = hook.VIEW_NAMES
     teacher = ["/t/a.png", "/t/b.png"]

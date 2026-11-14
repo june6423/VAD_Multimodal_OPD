@@ -5,7 +5,8 @@
 # training, entropy logging, file logger, rollout dumps, the Ray hook scripts/vad_packfix/hostmem.setup,
 # mm_processor_cache_gb 0, the validation of saved checkpoints after the training in 4 val_only processes
 # (val_split.py, val_concat.py, valtrim.setup, valguard.sh, val_batch_size 32), rollout_acc.py.
-# Changes (Definition 1): TOTAL_TRAINING_STEPS 40, checkpoints of steps 20 and 40 (TRAINER_SAVE_FREQ 20), and
+# Changes (Definition 1): TOTAL_TRAINING_STEPS 40, checkpoints of steps 20 and 40 (TRAINER_SAVE_FREQ 20; R2: the
+# fast validation and the held-out set B only for the step 40 checkpoint), and
 # Definition 3: VAD_VIEW_ARM=<ARM> for the trainer (scripts/vad_view2/hook.py through ray_trainer._vad_view2_hook,
 # given to the Ray workers by runtime_env env_vars with VAD_VIEW_MAP and VAD_VIEW_LOG_DIR=<out>/views_log), and
 # ROLLOUT_N=1 for N1R (rollout.n 8 for B, T8 and N1V8; N1V8 generates 1 response and copies it 8 times).
@@ -52,9 +53,11 @@ export PYTHONDONTWRITEBYTECODE=1
   df -B1 "$out"
 } >> "$log" 2>&1
 
-if [[ "$pilot" == 1 ]]; then steps=2; ckpt_steps=(2)
-elif [[ "$check" == 1 ]]; then steps=1; ckpt_steps=()
-else steps=40; ckpt_steps=(20 40); fi
+# ckpt_steps: the checkpoints that must exist. eval_steps: the checkpoints with the fast validation, the merge and the
+# held-out set B (HANDOFF-VLM-VAD-VIEW-002-R2: step 40 only; the step 20 checkpoint stays for a later evaluation).
+if [[ "$pilot" == 1 ]]; then steps=2; ckpt_steps=(2); eval_steps=(2)
+elif [[ "$check" == 1 ]]; then steps=1; ckpt_steps=(); eval_steps=()
+else steps=40; ckpt_steps=(20 40); eval_steps=(40); fi
 if [[ -f "$out/TRAIN_DONE" ]]; then
   echo "arm $arm already finished" >> "$log"
   exit 0
@@ -267,7 +270,7 @@ if [[ ! -f "$out/validation/0.jsonl" ]]; then
   cp -f "${step0_from:?VAL_STEP0_FROM is needed}" "$out/validation/0.jsonl" || exit 1
   echo "step 0 validation copied from $step0_from sha256 $(sha256sum "$out/validation/0.jsonl" | cut -d' ' -f1) (Definition 5)" >> "$log"
 fi
-for k in "${ckpt_steps[@]}"; do
+for k in "${eval_steps[@]}"; do
   [[ -f "$out/validation/$k.jsonl" ]] && continue
   if [[ "$pilot" == 1 ]]; then
     validate "val$k" "$k" "$val_file" "$out/validation" || exit 1
@@ -281,7 +284,7 @@ PYTHONPATH="$root" "$py" scripts/vad_packfix/rollout_acc.py "$out" "$steps" "$BE
 stop_judge
 
 # Held-out set B (Definition 6) on each checkpoint step, after the merge into a Hugging Face directory.
-for k in "${ckpt_steps[@]}"; do
+for k in "${eval_steps[@]}"; do
   [[ -f "$out/heldout/$k/HELDOUT_B.json" ]] && continue
   m="$out/merged/step_$k"
   if [[ ! -d "$m" ]]; then

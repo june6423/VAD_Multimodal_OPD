@@ -7,8 +7,9 @@ scoring = the mean "seconds" of ROLLOUT_ACC.json. Pilot P (16 prompts per step) 
 pilot steps of the same three timings.
   step_X = R_gen x P_gen(X) / P_gen(B) + R_update x P_update(X) / P_update(B)
            + (R_step - R_gen - R_update) x P_rest(X) / P_rest(B),  P_rest = P_step - P_gen - P_update
-  arm_X = startup_X + 40 x step_X + judge start + 2 x validation + 40 x scoring x rows_X / 768
-          + 2 x (merge_X + heldout load_X + 500 x heldout item seconds_X)
+  arm_X = startup_X + 40 x step_X + judge start + E x validation + 40 x scoring x rows_X / 768
+          + E x (merge_X + heldout load_X + 500 x heldout item seconds_X)
+  E = 1 evaluated checkpoint (HANDOFF-VLM-VAD-VIEW-002-R2: step 40 only; R1 had E = 2).
   startup_X = pilot run1 wall seconds - pilot step 1 seconds; judge start = largest judge_start_seconds of the pilot;
   merge_X = the pilot merge wall seconds; heldout = the pilot heldout wall seconds minus the item seconds (load) and
   the mean item seconds of HELDOUT_B.jsonl; rows_X = 96 for N1R, else 768.
@@ -25,7 +26,7 @@ import sys
 from pathlib import Path
 
 ARMS = ("N1R", "N1V8", "B", "T8")
-LIMIT_H, STEPS, HELDOUT_ITEMS = 66.0, 40, 500
+LIMIT_H, STEPS, HELDOUT_ITEMS, EVALS = 66.0, 40, 500, 1
 
 
 def means(sm: dict, steps) -> dict:
@@ -74,8 +75,8 @@ def project(ref: dict, pil: dict) -> dict:
                 + ref["rest"] * p["rest"] / b["rest"])
         rows = 96 if a == "N1R" else 768
         parts = {"startup_s": p["startup_s"], "steps_s": STEPS * step, "judge_start_s": p["judge_start_s"],
-                 "validation_s": 2 * ref["validation_s"], "scoring_s": STEPS * ref["scoring_s"] * rows / 768,
-                 "merge_heldout_s": 2 * (p["merge_s"] + p["heldout_load_s"] + HELDOUT_ITEMS * p["heldout_item_s"])}
+                 "validation_s": EVALS * ref["validation_s"], "scoring_s": STEPS * ref["scoring_s"] * rows / 768,
+                 "merge_heldout_s": EVALS * (p["merge_s"] + p["heldout_load_s"] + HELDOUT_ITEMS * p["heldout_item_s"])}
         res[a] = {"step_s": step, "parts": parts, "total_h": sum(parts.values()) / 3600}
     return res
 
@@ -91,7 +92,7 @@ def main():
     overhead = max(0.0, total_wall - arm_walls)
     total = sum(v["total_h"] for v in arms.values()) + overhead / 3600
     res = {"reference": ref, "reference_dir": str(ref_dir), "pilot": pil, "arms": arms, "overhead_s": overhead,
-           "total_h": total, "limit_h": LIMIT_H, "within_limit": total <= LIMIT_H}
+           "total_h": total, "limit_h": LIMIT_H, "within_limit": total <= LIMIT_H, "evaluated_checkpoints": EVALS}
     out.write_text(json.dumps(res, indent=1))
     print(json.dumps({"arms": {a: round(v["total_h"], 2) for a, v in arms.items()}, "total_h": round(total, 2),
                       "within_limit": total <= LIMIT_H}))

@@ -3,7 +3,7 @@
 Reads, for each arm directory <root>/<arm> (arms B, T8, N1V8, N1R): STEP_METRICS.json (scripts/vad_packfix/metrics.py),
 VAL_ACC.json (scripts/vad_packfix/val_acc.py), validation/<step>.jsonl, heldout/<step>/HELDOUT_B.json (heldout.py) and
 views_log/assign_<step>.jsonl (hook.py).
-1. validation: for each arm and validated step (20 and 40; the pilot step 2): the fast-validation accuracy (acc_mean of
+1. validation: for each arm and validated step (FULL under R2: 40; the pilot step 2): the fast-validation accuracy (acc_mean of
    VAL_ACC.json), the row count and the letter-first rate (Definition 7: the fraction of rows whose response, after
    the leading white space, starts with an option letter A to F that is not followed by a letter or a digit).
 2. comparisons C1 = T8 - B, C2 = N1V8 - N1R, C3 = N1V8 - B at each validated step: the difference of accuracy in

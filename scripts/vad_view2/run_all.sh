@@ -2,10 +2,11 @@
 # Entry point of the pilot task and the FULL task of VLM-VAD-VIEW-002 (HANDOFF-VLM-VAD-VIEW-002-R1 Part B items 2
 # and 4): the host checks of scripts/vad_packfix/run_both.sh (container cgroup, oom_kill, orphan Ray and vLLM
 # processes, memwatch.sh, offload_selftest.py), make_viewmap.sh, then run_view2.sh for the arms N1R, N1V8, B and T8
-# in this order into <out>/<arm>, then stats.py (STATS_VIEW002.json) and steppeak.py (STEPPEAK.json).
+# in this order into <out>/<arm>, then stats.py (STATS_VIEW002.json; R2: step 40 only) and
+# scripts/vad_view2/steppeak.py (STEPPEAK.json).
 # PILOT=1 (Part A item 7): pilot_rows.py first (16 prompts), stats.py on step 2 with 20 rows, projection.py
 # (PROJECTION.json), then the end cleanup (the checkpoints and merged models of the pilot are removed after the checks).
-# The FULL task keeps the checkpoints of steps 20 and 40 and the merged models on b200.
+# The FULL task keeps the checkpoints of steps 20 and 40 and the merged step 40 model on b200.
 # A restarted task skips a finished arm (TRAIN_DONE) and resumes an unfinished arm from its last checkpoint.
 # Usage: B200_ROOT=<root> ENV_ROOT=<env root> CUDA_VISIBLE_DEVICES=0 [PILOT=1] [JUDGE_GPU_UTIL] [ROLLOUT_GPU_UTIL] \
 #   scripts/vad_view2/run_all.sh <output_root>
@@ -48,7 +49,7 @@ memory_summary() {
     echo "oom_kill after $(oom_kill)"
     echo "orphan ray and vllm processes after the run: $(ps -eo pid,ppid,args | awk '$2==1 && $3 ~ /^(ray|VLLM)::/' | wc -l)"
   } >> "$log"
-  PYTHONPATH="$root" "$py" scripts/vad_packfix/steppeak.py "$out" "$out/STEPPEAK.json" >> "$log" 2>&1
+  PYTHONPATH="$root" "$py" scripts/vad_view2/steppeak.py "$out" "$out/STEPPEAK.json" >> "$log" 2>&1
   echo "steppeak exit $?" >> "$log"
 }
 trap memory_summary EXIT
@@ -83,7 +84,7 @@ if [[ "$pilot" == 1 ]]; then
     rm -rf "$out/$arm/checkpoints" "$out/$arm/merged"
   done
 else
-  "$py" scripts/vad_view2/stats.py "$out" "$out/STATS_VIEW002.json" >> "$log" 2>&1 || { echo "stats failed" >> "$log"; exit 1; }
+  "$py" scripts/vad_view2/stats.py "$out" "$out/STATS_VIEW002.json" 40 2636 >> "$log" 2>&1 || { echo "stats failed" >> "$log"; exit 1; }
 fi
 echo "stats exit 0" >> "$log"
 echo "temporary files removed: $(find "$out" -name '*.tmp' -print -delete | wc -l)" >> "$log"
