@@ -5,8 +5,8 @@
 # in this order into <out>/<arm>, then stats.py (STATS_VIEW002.json; R2: step 40 only) and
 # scripts/vad_view2/steppeak.py (STEPPEAK.json).
 # PILOT=1 (Part A item 7): pilot_rows.py first (16 prompts), stats.py on step 2 with 20 rows, projection.py
-# (PROJECTION.json), one full-size step of N1V8 and T8 before stats.py (DIRECTIVE-VLM-VAD-VIEW-002-002, peak
-# below 134 GiB, STEPPEAK_FULLSIZE.json), then the end cleanup (the checkpoints and merged models of the pilot are removed after the checks).
+# (PROJECTION.json), one full-size step of N1V8 and 5 + 1 resumed full-size steps of T8 before stats.py
+# (DIRECTIVE-VLM-VAD-VIEW-002-002 and -007, peak below 134 GiB, STEPPEAK_FULLSIZE.json), then the end cleanup (the checkpoints and merged models of the pilot are removed after the checks).
 # The FULL task keeps the checkpoints of steps 20 and 40 and the merged step 40 model on b200.
 # A restarted task skips a finished arm (TRAIN_DONE) and resumes an unfinished arm from its last checkpoint.
 # Usage: B200_ROOT=<root> ENV_ROOT=<env root> CUDA_VISIBLE_DEVICES=0 [PILOT=1] [JUDGE_GPU_UTIL] [ROLLOUT_GPU_UTIL] \
@@ -83,12 +83,19 @@ if [[ "$pilot" == 1 ]]; then
   mkdir -p "$fs"
   echo "== date $(date -u +%Y-%m-%dT%H:%M:%SZ) full-size steps" >> "$fs/RUN_ALL.txt"
   ln -sfn ../memwatch.log "$fs/memwatch.log"
-  for arm in N1V8 T8; do
+  # DIRECTIVE-VLM-VAD-VIEW-002-007: T8 runs 5 full-size steps in one process (save at step 5), then a second process
+  # resumes from that checkpoint for step 6 (save at step 6).
+  for run in "N1V8 1" "T8 5" "T8 6"; do
+    read -r arm n <<< "$run"
     start=$(date +%s)
-    PILOT=0 ARM="$arm" DIAG_STEPS=1 bash scripts/vad_view2/run_view2.sh "$fs/$arm"
+    PILOT=0 ARM="$arm" DIAG_STEPS="$n" bash scripts/vad_view2/run_view2.sh "$fs/$arm"
     code=$?
-    echo "full-size arm $arm exit $code wall_seconds $(( $(date +%s) - start )) at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
-    rm -rf "$fs/$arm/checkpoints"
+    echo "full-size arm $arm steps $n exit $code wall_seconds $(( $(date +%s) - start )) at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
+    if [[ "$arm" == T8 && "$n" == 6 ]]; then
+      grep -n -i -E "resum|load(ing)? (from )?checkpoint|global_step_5" "$fs/T8/console_diag6.log" | head -n 20 \
+        | sed 's/^/full-size T8 resume evidence: /' >> "$log"
+    fi
+    [[ "$arm" == T8 && "$n" == 5 ]] || rm -rf "$fs/$arm/checkpoints"
     [[ $code -eq 0 ]] || exit 1
   done
   PYTHONPATH="$root" "$py" scripts/vad_view2/steppeak.py "$fs" "$out/STEPPEAK_FULLSIZE.json" >> "$log" 2>&1 || exit 1

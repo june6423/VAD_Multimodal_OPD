@@ -24,6 +24,8 @@
 # DIRECTIVE-VLM-VAD-VIEW-002-004 (rollout memory): mm_processor_cache_gb 2 with the lru type (was 0), and
 #   MALLOC_ARENA_MAX=2 and MALLOC_MMAP_THRESHOLD_=4194304 for the Ray workers of the training.
 #   DIRECTIVE-VLM-VAD-VIEW-002-005: the validation (val_common) keeps mm_processor_cache_gb 0 and no MALLOC variable.
+# DIRECTIVE-VLM-VAD-VIEW-002-007: the full T8 run saves every 5 steps and keeps all 8 checkpoints (the step-20
+#   checkpoint stays). The DIAG_STEPS run has the tag diag<n>, so a resumed DIAG_STEPS run keeps its own console file.
 # A restarted task resumes through trainer.resume_mode=auto, skips a finished training, a validated step, a merged
 # checkpoint and a finished held-out step. A finished arm (TRAIN_DONE) is not run again.
 # Usage: ARM=<B|T8|N1V8|N1R> VAD_VIEW_MAP=<VIEWMAP.json> HELDOUT_JSON=<HELDOUT.json> [PILOT=1] [CHECK=1]
@@ -125,6 +127,8 @@ export EXPERIMENT_NAME="VIEW2-$arm"
 export TRAINER_DEFAULT_LOCAL_DIR="$out/checkpoints"
 export TRAINER_ROLLOUT_DATA_DIR="$out/rollouts"
 export TRAINER_MAX_ACTOR_CKPT_TO_KEEP=3
+full_save=20
+if [[ "$arm" == T8 ]]; then full_save=5; export TRAINER_MAX_ACTOR_CKPT_TO_KEEP=8; fi
 export BENCHMARK_EVAL_JUDGE_MODEL=mistralai/Mistral-Small-3.2-24B-Instruct-2506
 export VAD_TOKSTATS_DIR="$out/tokstats"
 export ROLLOUT_GPU_MEMORY_UTILIZATION="$rollout_util"
@@ -245,9 +249,9 @@ if [[ "$latest" -lt "$steps" ]]; then
   elif [[ "$check" == 1 ]]; then
     train 1 1 check || exit 1
   elif [[ "$diag" -gt 0 ]]; then
-    train "$diag" "$diag" diag || exit 1
+    train "$diag" "$diag" "diag$diag" || exit 1
   else
-    train 40 20 full || exit 1
+    train 40 "$full_save" full || exit 1
   fi
   stop_stub
 fi

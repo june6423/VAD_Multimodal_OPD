@@ -7,6 +7,8 @@ RUN_ALL.txt, the arms N1R, N1V8, B and T8, and RUN_VIEW2.txt. Each train or vali
 DIRECTIVE-VLM-VAD-VIEW-002-005 action 6: each row also gets "peak_groups", the RSS (GiB) of the process groups
 AgentLoopW, TaskRunner, WorkerDict, vLLMHttpSe and EngineCore and the /dev/shm use of the Ray object store
 (memwatch devshm_used) at the anon+shmem peak sample. The same values go to <out json stem>_GROUPS.tsv.
+DIRECTIVE-VLM-VAD-VIEW-002-007: the runs of an arm log from its first "== date" header at or after the last RUN_ALL.txt
+date count (was: only after the last header), so the resumed full-size T8 run keeps the rows of the first run.
 Usage: python steppeak.py <task output root> <out json>. Exit 1 when no window is found.
 """
 
@@ -35,6 +37,15 @@ def devshm(path):
     return out
 
 
+def this_watch(text, since):
+    """The arm log from its first "== date" header at or after since (the last RUN_ALL.txt date): only the runs of
+    this memwatch.log. DIRECTIVE-VLM-VAD-VIEW-002-007: a resumed run in the same arm log stays in."""
+    for m in DATE.finditer(text):
+        if f"{m.group(1)}T{m.group(2)}" >= since:
+            return text[m.start():]
+    return ""
+
+
 def peak_groups(rows, mw) -> None:
     """Add the group RSS and the object store /dev/shm use at the anon+shmem peak sample to each row."""
     at = {iso(s["t"]): s for s in mw}
@@ -47,7 +58,8 @@ def peak_groups(rows, mw) -> None:
 
 def main(root, dest) -> int:
     root = Path(root)
-    start_day = DATE.findall((root / "RUN_ALL.txt").read_text())[-1][0]
+    start_day, start_time = DATE.findall((root / "RUN_ALL.txt").read_text())[-1]
+    since = f"{start_day}T{start_time}"
     mw = samples(root / "memwatch.log", start_day)
     for s, d in zip(mw, devshm(root / "memwatch.log")):
         s["devshm_used"] = d
@@ -56,8 +68,7 @@ def main(root, dest) -> int:
         run_log = root / arm / "RUN_VIEW2.txt"
         if not run_log.exists():
             continue
-        text = run_log.read_text()
-        text = text[max(0, text.rfind("== date")):]  # only the runs of this memwatch.log, as in steppeak.py
+        text = this_watch(run_log.read_text(), since)
         ends = {m.group(1): int(m.group(2)) for m in RUN_END.finditer(text)}
         for m in RUN_START.finditer(text):
             console = root / arm / f"console_{m.group(1)}.log"
