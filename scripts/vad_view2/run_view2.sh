@@ -21,6 +21,8 @@
 #   PYTHONPATH, and VAD_G3_REPLAY and VAD_G3_GRAD go to the workers.
 # DIAG_STEPS=<n> (DIRECTIVE-VLM-VAD-VIEW-002-002, host-memory diagnosis): steps 1 to n from M0 with the full batch,
 #   training only (no judge session, no validation), one save at step n.
+# DIRECTIVE-VLM-VAD-VIEW-002-004 (rollout memory): mm_processor_cache_gb 2 with the lru type (was 0), and
+#   MALLOC_ARENA_MAX=2 and MALLOC_MMAP_THRESHOLD_=4194304 for the Ray workers. Training and validation use both.
 # A restarted task resumes through trainer.resume_mode=auto, skips a finished training, a validated step, a merged
 # checkpoint and a finished held-out step. A finished arm (TRAIN_DONE) is not run again.
 # Usage: ARM=<B|T8|N1V8|N1R> VAD_VIEW_MAP=<VIEWMAP.json> HELDOUT_JSON=<HELDOUT.json> [PILOT=1] [CHECK=1]
@@ -138,7 +140,10 @@ common=(
   "++ray_kwargs.ray_init.runtime_env.env_vars.VAD_VIEW_MAP='$viewmap'"
   "++ray_kwargs.ray_init.runtime_env.env_vars.VAD_VIEW_LOG_DIR='$out/views_log'"
   "++ray_kwargs.ray_init.runtime_env.worker_process_setup_hook=$hook"
-  ++actor_rollout_ref.rollout.engine_kwargs.vllm.mm_processor_cache_gb=0
+  ++actor_rollout_ref.rollout.engine_kwargs.vllm.mm_processor_cache_gb=2
+  ++actor_rollout_ref.rollout.engine_kwargs.vllm.mm_processor_cache_type=lru
+  "++ray_kwargs.ray_init.runtime_env.env_vars.MALLOC_ARENA_MAX='2'"
+  "++ray_kwargs.ray_init.runtime_env.env_vars.MALLOC_MMAP_THRESHOLD_='4194304'"
   actor_rollout_ref.actor.calculate_entropy=True
   actor_rollout_ref.actor.entropy_coeff=0
   "++trainer.validation_data_dir=$out/validation"
