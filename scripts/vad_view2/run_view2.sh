@@ -26,6 +26,8 @@
 #   DIRECTIVE-VLM-VAD-VIEW-002-005: the validation (val_common) keeps mm_processor_cache_gb 0 and no MALLOC variable.
 # DIRECTIVE-VLM-VAD-VIEW-002-007: the full T8 run saves every 5 steps and keeps all 8 checkpoints (the step-20
 #   checkpoint stays). The DIAG_STEPS run has the tag diag<n>, so a resumed DIAG_STEPS run keeps its own console file.
+# DIRECTIVE-VLM-VAD-VIEW-002-008: the full T8 run is 4 processes that end after steps 10, 20, 30 and 40 (full_t8,
+#   total_training_steps 40 in each). DIAG_TOTAL=<n> (pilot): the DIAG_STEPS run is one process of an <n>-step run.
 # A restarted task resumes through trainer.resume_mode=auto, skips a finished training, a validated step, a merged
 # checkpoint and a finished held-out step. A finished arm (TRAIN_DONE) is not run again.
 # Usage: ARM=<B|T8|N1V8|N1R> VAD_VIEW_MAP=<VIEWMAP.json> HELDOUT_JSON=<HELDOUT.json> [PILOT=1] [CHECK=1]
@@ -161,22 +163,54 @@ if [[ "$check" == 1 ]]; then
   done
 fi
 
-# train <total steps> <save freq> <tag>: one run, its own file-logger file (the verl FileLogger truncates its file).
+# train <total steps> <save freq> <tag> [<stop step>]: one run, its own file-logger file (the verl FileLogger truncates
+# its file). With a stop step (DIRECTIVE-VLM-VAD-VIEW-002-008): the process saves and ends after that step
+# (trainer.vad_stop_after_step, total_training_steps unchanged), under valguard.sh (exit 125 at a container oom_kill or
+# a Ray worker death line, so a dead worker does not leave the run waiting as in TASK-VLM-VAD-VIEW-002-011).
 train() {
-  local total="$1" save="$2" tag="$3" start code metrics_file
+  local total="$1" save="$2" tag="$3" stop="${4:-}" start code metrics_file guard=() extra=()
   start=$(date +%s)
   metrics_file="$out/metrics_${tag}_$start.jsonl"
-  echo "== train $tag: total $total save $save rollout.n ${ROLLOUT_N:-8} metrics $metrics_file start $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
+  if [[ -n "$stop" ]]; then
+    guard=(bash scripts/vad_packfix/valguard.sh 28800 "$out/console_$tag.log" "${VAD_CONTAINER_CGROUP:?}")
+    extra=("++trainer.vad_stop_after_step=$stop")
+  fi
+  echo "== train $tag: total $total save $save stop ${stop:-none} rollout.n ${ROLLOUT_N:-8} metrics $metrics_file start $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
   VERL_FILE_LOGGER_PATH="$metrics_file" TOTAL_TRAINING_STEPS="$total" TRAINER_SAVE_FREQ="$save" \
     ACTOR_OPTIMIZER_OFFLOAD=False \
-    bash scripts/train_vad.sh --profile 4b -- "${common[@]}" \
+    "${guard[@]}" bash scripts/train_vad.sh --profile 4b -- "${common[@]}" \
     "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_PATH='$metrics_file'" \
-    trainer.val_before_train=False trainer.test_freq=-1 \
+    trainer.val_before_train=False trainer.test_freq=-1 "${extra[@]}" \
     > "$out/console_$tag.log" 2>&1
   code=$?
   cat "$out/console_$tag.log" >> "$out/console.log"
   echo "train $tag exit $code wall_seconds $(( $(date +%s) - start )) latest $(cat "$out/checkpoints/latest_checkpointed_iteration.txt" 2>/dev/null || echo none)" >> "$log"
   return "$code"
+}
+
+# full_t8 (DIRECTIVE-VLM-VAD-VIEW-002-008): 40 steps in 4 processes that end after steps 10, 20, 30 and 40 (total 40,
+# save every 5 steps). Each process resumes from the last checkpoint. After a failed process, a second process resumes
+# from the last checkpoint at once. A second failure in the same 10-step range stops the arm.
+full_t8() {
+  local stop attempt latest left
+  for stop in 10 20 30 40; do
+    for attempt in 1 2; do
+      latest=$(cat "$out/checkpoints/latest_checkpointed_iteration.txt" 2>/dev/null || echo 0)
+      [[ "$latest" -ge "$stop" ]] && break
+      if [[ "$attempt" == 2 ]]; then
+        for _ in $(seq 1 60); do
+          left=$(ps -eo ppid,args | awk '$1==1 && $2 ~ /^(ray|VLLM)::/' | wc -l)
+          [[ "$left" -eq 0 ]] && break
+          sleep 5
+        done
+        echo "range to step $stop: failure at latest $latest, orphan ray and vllm processes $left, second process" >> "$log"
+        [[ "$left" -eq 0 ]] || return 1
+      fi
+      train 40 5 "full${stop}_$attempt" "$stop"
+    done
+    latest=$(cat "$out/checkpoints/latest_checkpointed_iteration.txt" 2>/dev/null || echo 0)
+    [[ "$latest" -ge "$stop" ]] || { echo "two failures in the range to step $stop: stop" >> "$log"; return 1; }
+  done
 }
 
 val_common=()
@@ -249,7 +283,13 @@ if [[ "$latest" -lt "$steps" ]]; then
   elif [[ "$check" == 1 ]]; then
     train 1 1 check || exit 1
   elif [[ "$diag" -gt 0 ]]; then
-    train "$diag" "$diag" "diag$diag" || exit 1
+    if [[ -n "${DIAG_TOTAL:-}" ]]; then
+      train "$DIAG_TOTAL" "$diag" "diag$diag" "$diag" || exit 1
+    else
+      train "$diag" "$diag" "diag$diag" || exit 1
+    fi
+  elif [[ "$arm" == T8 ]]; then
+    full_t8 || exit 1
   else
     train 40 "$full_save" full || exit 1
   fi

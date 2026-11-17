@@ -5,8 +5,9 @@
 # in this order into <out>/<arm>, then stats.py (STATS_VIEW002.json; R2: step 40 only) and
 # scripts/vad_view2/steppeak.py (STEPPEAK.json).
 # PILOT=1 (Part A item 7): pilot_rows.py first (16 prompts), stats.py on step 2 with 20 rows, projection.py
-# (PROJECTION.json), one full-size step of N1V8 and 5 + 1 resumed full-size steps of T8 before stats.py
-# (DIRECTIVE-VLM-VAD-VIEW-002-002 and -007, peak below 134 GiB, STEPPEAK_FULLSIZE.json), then the end cleanup (the checkpoints and merged models of the pilot are removed after the checks).
+# (PROJECTION.json), full-size T8 step 1 and resumed step 2 of a 40-step run before stats.py
+# (DIRECTIVE-VLM-VAD-VIEW-002-002 and -008, peak below 134 GiB, STEPPEAK_FULLSIZE.json). DIRECTIVE-008: the pilot
+# trains only T8 and copies the small arms N1R, N1V8 and B of TASK-VLM-VAD-VIEW-002-010; then the end cleanup (the checkpoints and merged models of the pilot are removed after the checks).
 # The FULL task keeps the checkpoints of steps 20 and 40 and the merged step 40 model on b200.
 # A restarted task skips a finished arm (TRAIN_DONE) and resumes an unfinished arm from its last checkpoint.
 # Usage: B200_ROOT=<root> ENV_ROOT=<env root> CUDA_VISIBLE_DEVICES=0 [PILOT=1] [JUDGE_GPU_UTIL] [ROLLOUT_GPU_UTIL] \
@@ -69,7 +70,17 @@ if [[ "$pilot" == 1 ]]; then
     "$out/pilot_train.parquet" "$out/PILOT_ROWS.json" >> "$log" 2>&1 || exit 1
   export PILOT_TRAIN_FILE="$out/pilot_train.parquet" HELDOUT_N=10
 fi
-for arm in N1R N1V8 B T8; do
+arms="N1R N1V8 B T8"
+if [[ "$pilot" == 1 ]]; then
+  # DIRECTIVE-VLM-VAD-VIEW-002-008: the pilot trains only T8. stats.py and projection.py read the small arms N1R, N1V8
+  # and B of the pilot TASK-VLM-VAD-VIEW-002-010 (same pilot rows and validation subset), copied into <out>.
+  arms="T8"
+  for a in N1R N1V8 B; do
+    [[ -d "$out/$a" ]] || cp -a "$b200/harness/outputs/VLM-VAD-VIEW-002/TASK-VLM-VAD-VIEW-002-010/$a" "$out/$a" || exit 1
+    echo "arm $a copied from TASK-VLM-VAD-VIEW-002-010: VAL_ACC.json sha256 $(sha256sum "$out/$a/VAL_ACC.json" | cut -d' ' -f1)" >> "$log"
+  done
+fi
+for arm in $arms; do
   start=$(date +%s)
   ARM="$arm" bash scripts/vad_view2/run_view2.sh "$out/$arm"
   code=$?
@@ -83,19 +94,19 @@ if [[ "$pilot" == 1 ]]; then
   mkdir -p "$fs"
   echo "== date $(date -u +%Y-%m-%dT%H:%M:%SZ) full-size steps" >> "$fs/RUN_ALL.txt"
   ln -sfn ../memwatch.log "$fs/memwatch.log"
-  # DIRECTIVE-VLM-VAD-VIEW-002-007: T8 runs 5 full-size steps in one process (save at step 5), then a second process
-  # resumes from that checkpoint for step 6 (save at step 6).
-  for run in "N1V8 1" "T8 5" "T8 6"; do
-    read -r arm n <<< "$run"
+  # DIRECTIVE-VLM-VAD-VIEW-002-008: T8 only. One process runs full-size step 1 of a 40-step run (DIAG_TOTAL=40, stop
+  # and save after step 1, as a process of the split FULL run), then a second process resumes from that checkpoint
+  # and runs step 2 (stop and save after step 2).
+  for n in 1 2; do
     start=$(date +%s)
-    PILOT=0 ARM="$arm" DIAG_STEPS="$n" bash scripts/vad_view2/run_view2.sh "$fs/$arm"
+    PILOT=0 ARM=T8 DIAG_TOTAL=40 DIAG_STEPS="$n" bash scripts/vad_view2/run_view2.sh "$fs/T8"
     code=$?
-    echo "full-size arm $arm steps $n exit $code wall_seconds $(( $(date +%s) - start )) at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
-    if [[ "$arm" == T8 && "$n" == 6 ]]; then
-      grep -n -i -E "resum|load(ing)? (from )?checkpoint|global_step_5" "$fs/T8/console_diag6.log" | head -n 20 \
-        | sed 's/^/full-size T8 resume evidence: /' >> "$log"
+    echo "full-size arm T8 steps $n exit $code wall_seconds $(( $(date +%s) - start )) at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log"
+    if [[ "$n" == 2 ]]; then
+      grep -n -i -E "resum|load(ing)? (from )?checkpoint|global_step_1|Loaded (lr_scheduler|rng)" "$fs/T8/console_diag2.log" \
+        | head -n 20 | sed 's/^/full-size T8 resume evidence: /' >> "$log"
+      rm -rf "$fs/T8/checkpoints"
     fi
-    [[ "$arm" == T8 && "$n" == 5 ]] || rm -rf "$fs/$arm/checkpoints"
     [[ $code -eq 0 ]] || exit 1
   done
   PYTHONPATH="$root" "$py" scripts/vad_view2/steppeak.py "$fs" "$out/STEPPEAK_FULLSIZE.json" >> "$log" 2>&1 || exit 1

@@ -2733,6 +2733,10 @@ class RayPPOTrainer:
                 gen_batch_output = gen_batch.repeat(repeat_times=gen_n, interleave=True)
 
                 is_last_step = self.global_steps >= self.total_training_steps
+                # VLM-VAD-VIEW-002 DIRECTIVE-008: one process of a split run saves and ends after this step.
+                # total_training_steps (and so the learning-rate schedule) stays the value of the whole run.
+                stop_after = self.config.trainer.get("vad_stop_after_step", None)
+                is_stop_step = stop_after is not None and self.global_steps >= int(stop_after)
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
@@ -3005,7 +3009,7 @@ class RayPPOTrainer:
                 # 2. It's the last training step.
                 # 3. The current step number is a multiple of the save frequency.
                 # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
-                if is_last_step or (self.config.trainer.save_freq > 0 and (
+                if is_last_step or is_stop_step or (self.config.trainer.save_freq > 0 and (
                     self.global_steps % self.config.trainer.save_freq == 0 or esi_close_to_expiration
                 )):
                     if esi_close_to_expiration:
@@ -3066,7 +3070,7 @@ class RayPPOTrainer:
                         tag=f"post_update_step{self.global_steps}", sub_dir=f"step{self.global_steps}"
                     )
 
-                if is_last_step:
+                if is_last_step or is_stop_step:
                     if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                         self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=True)
                     pprint(f"Final validation metrics: {last_val_metrics}")
