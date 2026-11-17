@@ -121,18 +121,64 @@ def test_worker_setup(monkeypatch):
         def update_actor(self, data):
             return data
 
+    class AgentWorker:
+        async def generate_sequences(self, batch):
+            return batch
+
     setup_calls = []
     hostmem = types.ModuleType("scripts.vad_packfix.hostmem")
     hostmem.setup = lambda: setup_calls.append(1)
     workers = types.ModuleType("verl.workers.fsdp_workers")
     workers.ActorRolloutRefWorker = Worker
+    agent_loop = types.ModuleType("verl.experimental.agent_loop.agent_loop")
+    agent_loop.AgentLoopWorker = AgentWorker
     import scripts.vad_packfix as packfix_pkg
 
     monkeypatch.setattr(packfix_pkg, "hostmem", hostmem, raising=False)
     monkeypatch.setitem(sys.modules, "scripts.vad_packfix.hostmem", hostmem)
     monkeypatch.setitem(sys.modules, "verl.workers.fsdp_workers", workers)
+    monkeypatch.setitem(sys.modules, "verl.experimental.agent_loop.agent_loop", agent_loop)
     memfix.worker_setup()
-    assert setup_calls == [1] and Worker._vad_view2_memfix_worker is True
+    assert setup_calls == [1] and Worker._vad_view2_memfix_worker is True and AgentWorker._vad_view2_agent_trim is True
+
+
+def _generated(step: int) -> DataProto:
+    """A generation output with the kinds of values that the training reads: tensors, object arrays, meta_info."""
+    mm = np.empty(4, dtype=object)
+    for i in range(4):
+        mm[i] = {"pixel_values": torch.full((5, 7), float(step + i)), "image_grid_thw": torch.tensor([[1, 2, 2]])}
+    return DataProto.from_dict(tensors={"responses": torch.arange(12).reshape(4, 3) + step,
+                                        "rollout_log_probs": torch.linspace(-2.0, 0.0, 12).reshape(4, 3)},
+                               non_tensors={"multi_modal_inputs": mm,
+                                            "uid": np.array(["a", "a", "b", "b"], dtype=object)},
+                               meta_info={"timing": {"generate_sequences": 1.5}})
+
+
+def test_patch_agent_loop_trim_keeps_the_value(capsys):
+    """DIRECTIVE-VLM-VAD-VIEW-002-005 action 5: the trim does not change a value that the training reads."""
+    import asyncio
+
+    class AgentWorker:
+        async def generate_sequences(self, batch):
+            return _generated(int(batch.batch["input_ids"][0, 0]))
+
+    batch = _batch(3)
+    batch.meta_info["global_steps"] = 3
+    ref = asyncio.run(AgentWorker().generate_sequences(batch))
+    memfix.patch_agent_loop_trim(AgentWorker)
+    wrapped = AgentWorker.generate_sequences
+    memfix.patch_agent_loop_trim(AgentWorker)
+    assert AgentWorker.generate_sequences is wrapped
+    got = asyncio.run(AgentWorker().generate_sequences(batch))
+    assert set(got.batch.keys()) == set(ref.batch.keys())
+    assert all(torch.equal(got.batch[k], ref.batch[k]) for k in ref.batch.keys())
+    assert list(got.non_tensor_batch["uid"]) == list(ref.non_tensor_batch["uid"])
+    for a, b in zip(ref.non_tensor_batch["multi_modal_inputs"], got.non_tensor_batch["multi_modal_inputs"]):
+        assert a.keys() == b.keys() and all(torch.equal(a[k], b[k]) and a[k].dtype == b[k].dtype for k in a)
+    assert got.meta_info == ref.meta_info
+    assert batch.meta_info == {"global_steps": 3} and int(batch.batch["input_ids"][0, 0]) == 3
+    out = capsys.readouterr().out
+    assert "VAD_VIEW2_MEMFIX agent pid=" in out and "step=3 rows=4 rss_before_gib" in out and "rss_after_gib" in out
 
 
 def test_memfix_empties_the_previous_step(tmp_path, monkeypatch):

@@ -21,6 +21,10 @@ keeps about 28 GiB between steps. Two more changes:
 3. worker_setup(): the Ray worker hook. It runs scripts.vad_packfix.hostmem.setup() and wraps
    ActorRolloutRefWorker.update_actor: after the update, gc.collect() and malloc_trim(0), and one log line with the
    worker RSS at the start, at the end and after the trim (VAD_VIEW2_MEMFIX worker).
+4. DIRECTIVE-VLM-VAD-VIEW-002-005 action 3: worker_setup() also wraps AgentLoopWorker.generate_sequences of the
+   training. After the generation of each step, the agent loop worker runs gc.collect() and malloc_trim(0) (as
+   scripts/vad_packfix/valtrim.py in the validation) and writes one line with its RSS before and after the trim
+   (VAD_VIEW2_MEMFIX agent). The wrapper returns the object that the generation returned, without a change.
 """
 
 from __future__ import annotations
@@ -144,10 +148,33 @@ def patch_update_actor(cls) -> None:
     cls._vad_view2_memfix_worker = True
 
 
+def patch_agent_loop_trim(cls) -> None:
+    """Wrap cls.generate_sequences once: gc.collect() and malloc_trim(0) after the generation, with one RSS log line."""
+    if getattr(cls, "_vad_view2_agent_trim", False):
+        return
+    orig = cls.generate_sequences
+
+    @functools.wraps(orig)
+    async def generate_sequences(self, batch, *args, **kwargs):
+        out = await orig(self, batch, *args, **kwargs)
+        r0 = rss_gib()
+        gc.collect()
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+        print(f"VAD_VIEW2_MEMFIX agent pid={os.getpid()} step={batch.meta_info.get('global_steps', -1)} rows={len(batch)} "
+              f"rss_before_gib {r0:.2f} rss_after_gib {rss_gib():.2f} utc {time.strftime('%H:%M:%S', time.gmtime())}",
+              flush=True)
+        return out
+
+    cls.generate_sequences = generate_sequences
+    cls._vad_view2_agent_trim = True
+
+
 def worker_setup():
-    """Ray worker_process_setup_hook of run_view2.sh: hostmem.setup() and the update_actor wrapper."""
+    """Ray worker_process_setup_hook of run_view2.sh: hostmem.setup(), the update_actor wrapper and the agent loop trim."""
     from scripts.vad_packfix import hostmem
+    from verl.experimental.agent_loop.agent_loop import AgentLoopWorker
     from verl.workers.fsdp_workers import ActorRolloutRefWorker
 
     hostmem.setup()
     patch_update_actor(ActorRolloutRefWorker)
+    patch_agent_loop_trim(AgentLoopWorker)

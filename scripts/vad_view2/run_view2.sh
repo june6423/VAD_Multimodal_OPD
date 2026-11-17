@@ -22,7 +22,8 @@
 # DIAG_STEPS=<n> (DIRECTIVE-VLM-VAD-VIEW-002-002, host-memory diagnosis): steps 1 to n from M0 with the full batch,
 #   training only (no judge session, no validation), one save at step n.
 # DIRECTIVE-VLM-VAD-VIEW-002-004 (rollout memory): mm_processor_cache_gb 2 with the lru type (was 0), and
-#   MALLOC_ARENA_MAX=2 and MALLOC_MMAP_THRESHOLD_=4194304 for the Ray workers. Training and validation use both.
+#   MALLOC_ARENA_MAX=2 and MALLOC_MMAP_THRESHOLD_=4194304 for the Ray workers of the training.
+#   DIRECTIVE-VLM-VAD-VIEW-002-005: the validation (val_common) keeps mm_processor_cache_gb 0 and no MALLOC variable.
 # A restarted task resumes through trainer.resume_mode=auto, skips a finished training, a validated step, a merged
 # checkpoint and a finished held-out step. A finished arm (TRAIN_DONE) is not run again.
 # Usage: ARM=<B|T8|N1V8|N1R> VAD_VIEW_MAP=<VIEWMAP.json> HELDOUT_JSON=<HELDOUT.json> [PILOT=1] [CHECK=1]
@@ -180,6 +181,9 @@ for c in "${common[@]}"; do
     ++trainer.validation_data_dir=*) ;;
     *=scripts.vad_packfix.hostmem.setup) val_common+=("${c%hostmem.setup}valtrim.setup") ;;
     *=scripts.vad_view2.memfix.worker_setup) val_common+=("${c%scripts.vad_view2.memfix.worker_setup}scripts.vad_packfix.valtrim.setup") ;;
+    # DIRECTIVE-VLM-VAD-VIEW-002-005 action 2: the validation keeps the settings of arms N1R, N1V8 and B.
+    *engine_kwargs.vllm.mm_processor_cache_gb=2) val_common+=("${c%=2}=0") ;;
+    *engine_kwargs.vllm.mm_processor_cache_type=*|*env_vars.MALLOC_ARENA_MAX=*|*env_vars.MALLOC_MMAP_THRESHOLD_=*) ;;
     *) val_common+=("$c") ;;
   esac
 done
